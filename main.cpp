@@ -297,6 +297,23 @@ void print_path(int tot_time_usage, std::vector<PathItem> const& path) {
     }
 }
 
+void print_speedup(int tot_time_usage) {
+    int valid_slots = 0;
+    for (int i = 0; i < NUM_MODELS; i++) {
+        valid_slots += MODEL_FWD_TIMES[i] * NUM_STAGES * NUM_MBATCHS * 3; // TODO: fix when NUM_STAGES is not constant
+    }
+    double baseline_bubble_rate = (double) (NUM_NODES - 1) / (NUM_NODES - 1 + NUM_MBATCHS);
+    int tot_slots = tot_time_usage * NUM_NODES;
+    double bubble_rate = 1 - (double) valid_slots / tot_slots;
+    printf("Bubble rate:\n\t1f1b: %f\tours: %f\n", baseline_bubble_rate, bubble_rate);
+    int baseline_time_usage = 0;
+    for (int i = 0; i < NUM_MODELS; i++) {
+        baseline_time_usage += MODEL_FWD_TIMES[i] * (NUM_STAGES - 1 + NUM_MBATCHS) * 3;
+    }
+    double speedup = (double) baseline_time_usage / tot_time_usage;
+    printf("Speedup: %f\n", speedup);
+}
+
 int main() {
     State init_state;
     for (int i = 0; i < NUM_NODES; i++) {
@@ -314,6 +331,7 @@ int main() {
     std::vector<PathItem> path;
     restore_memory(init_state, 0, path);
 
+    print_speedup(result);
     print_path(result, path);
 
     return 0;
