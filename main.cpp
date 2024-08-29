@@ -1,13 +1,12 @@
 #include <bits/stdc++.h>
 #include <climits>
 
-/*
 // We define these numbers as a constexpr since we are going to allocate arrays with size N
 // You may use metaprogramming if you want to make it more flexible
 constexpr int NUM_STAGES = 4; // The number of pipeline stages
 constexpr int NUM_NODES = NUM_STAGES;
 constexpr int NUM_MODELS = 2; // The number of models
-constexpr int NUM_MBATCHS = 6; // The number of micro batches in each model. "mbatch" is micro batch
+constexpr int NUM_MBATCHS = 5; // The number of micro batches in each model. "mbatch" is micro batch
 
 // The forward and backward time of a micro batch in each model
 // We use constexpr to make it more efficient. This can be changed to a normal variable
@@ -17,24 +16,6 @@ constexpr int MODEL_BWD_TIMES[NUM_MODELS] = {4, 2};
 // A mapping from a stage in a model to the index of a node
 constexpr int STAGE_TO_NODE[NUM_MODELS][NUM_STAGES*2] = {
     {0, 1, 2, 3, 3, 2, 1, 0},
-    {3, 2, 1, 0, 0, 1, 2, 3}
-};
-*/
-
-
-constexpr int NUM_STAGES = 4; // The number of pipeline stages
-constexpr int NUM_NODES = NUM_STAGES;
-constexpr int NUM_MODELS = 2; // The number of models
-constexpr int NUM_MBATCHS = 3; // The number of micro batches in each model. "mbatch" is micro batch
-
-// The forward and backward time of a micro batch in each model
-// We use constexpr to make it more efficient. This can be changed to a normal variable
-constexpr int MODEL_FWD_TIMES[NUM_MODELS] = {2, 1};
-constexpr int MODEL_BWD_TIMES[NUM_MODELS] = {4, 2};
-
-// A mapping from a stage in a model to the index of a node
-constexpr int STAGE_TO_NODE[NUM_MODELS][NUM_STAGES*2] = {
-    {0, 1,  2, 3, 3, 2, 1, 0},
     {3, 2, 1, 0, 0, 1, 2, 3}
 };
 
@@ -62,7 +43,7 @@ struct State {
     inline hash_t get_hash() const {
         hash_t hash = 0;
         for (int i = 0; i < NUM_NODES; i++) {
-            hash = hash * 31 + node_task_time_remaining[i];
+            hash = hash * 133 + node_task_time_remaining[i];    // TODO Fix this hash
             hash = hash * NUM_MODELS + node_cur_model_id[i];
             hash = hash * NUM_MBATCHS + node_cur_mbatch_id[i];
         }
@@ -111,6 +92,7 @@ int dfs(const State &state) {
     int best_result = INT_MAX;
     int best_model_id = -1;
     int best_mbatch_id = -1;
+    int min_schedulable_task_duration = INT_MAX;
     // Try to schedule a micro batch on a node
     // Enumerate the micro batch to be scheduled
     for (int model_id = 0; model_id < NUM_MODELS; ++model_id) {
@@ -141,6 +123,7 @@ int dfs(const State &state) {
             // Construct the new state
             State new_state = state;
             int cur_task_duration = (next_stage_id < NUM_STAGES) ? MODEL_FWD_TIMES[model_id] : MODEL_BWD_TIMES[model_id];
+            min_schedulable_task_duration = std::min(min_schedulable_task_duration, cur_task_duration);
             new_state.node_task_time_remaining[target_node] = cur_task_duration;
             new_state.mbatch_nxt_stage[model_id][mbatch_id] = next_stage_id + 1;
             // Move the time forward
@@ -176,7 +159,9 @@ int dfs(const State &state) {
                 min_task_time_remaining = std::min(min_task_time_remaining, cur_node_time_remaining);
             }
         }
-        if (min_task_time_remaining != INT_MAX) {
+        // The latter condition is a pruning optimization: If we can allocate something and that ends
+        // before we just wait, we should allocate it
+        if (min_task_time_remaining != INT_MAX && min_task_time_remaining < min_schedulable_task_duration) {
             State new_state = state;
             // Move the time forward
             for (int i = 0; i < NUM_NODES; i++) {
