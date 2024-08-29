@@ -6,7 +6,7 @@
 constexpr int NUM_STAGES = 4; // The number of pipeline stages
 constexpr int NUM_NODES = NUM_STAGES;
 constexpr int NUM_MODELS = 2; // The number of models
-constexpr int NUM_MBATCHS = 5; // The number of micro batches in each model. "mbatch" is micro batch
+constexpr int NUM_MBATCHS = 4; // The number of micro batches in each model. "mbatch" is micro batch
 
 // The forward and backward time of a micro batch in each model
 // We use constexpr to make it more efficient. This can be changed to a normal variable
@@ -93,6 +93,19 @@ int dfs(const State &state) {
     int best_model_id = -1;
     int best_mbatch_id = -1;
     int min_schedulable_task_duration = INT_MAX;
+
+    // pre_min_task_time_remaining is min{node_task_time_remaining[i] | node_task_time_remaining[i] != 0}
+    // We pre-calculate this number to optimize performance, so that when calculate min_task_time_remaining we do not need an extra loop
+    int pre_min_task_time_remaining = INT_MAX;
+    int num_0s = 0;
+    for (int i = 0; i < NUM_NODES; i++) {
+        if (state.node_task_time_remaining[i] == 0) {
+            num_0s++;
+        } else {
+            pre_min_task_time_remaining = std::min(pre_min_task_time_remaining, state.node_task_time_remaining[i]);
+        }
+    }
+
     // Try to schedule a micro batch on a node
     // Enumerate the micro batch to be scheduled
     for (int model_id = 0; model_id < NUM_MODELS; ++model_id) {
@@ -127,12 +140,13 @@ int dfs(const State &state) {
             new_state.node_task_time_remaining[target_node] = cur_task_duration;
             new_state.mbatch_nxt_stage[model_id][mbatch_id] = next_stage_id + 1;
             // Move the time forward
-            int min_task_time_remaining = INT_MAX;
-            for (int i = 0; i < NUM_NODES; i++) {
-                min_task_time_remaining = std::min(min_task_time_remaining, new_state.node_task_time_remaining[i]);
-            }
-            for (int i = 0; i < NUM_NODES; i++) {
-                new_state.node_task_time_remaining[i] -= min_task_time_remaining;
+            // Here min_task_time_remaining = min{new_state.node_task_time_remaining[i]} and
+            // we use pre_min_task_time_remaining to optimize the performance
+            int min_task_time_remaining = num_0s == 1 ? std::min(pre_min_task_time_remaining, cur_task_duration) : 0;
+            if (min_task_time_remaining) {
+                for (int i = 0; i < NUM_NODES; i++) {
+                    new_state.node_task_time_remaining[i] -= min_task_time_remaining;
+                }
             }
             new_state.node_cur_model_id[target_node] = model_id;
             new_state.node_cur_mbatch_id[target_node] = mbatch_id;
