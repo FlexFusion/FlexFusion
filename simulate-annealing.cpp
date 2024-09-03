@@ -4,7 +4,7 @@
 #include <iostream>
 #include <random>
 #include <vector>
-using std::vector, std::string;
+using std::vector, std::string, std::pair;
 
 class DualEgoSolver {
 public:
@@ -97,10 +97,11 @@ private:
 	}
 
 	// Return the time usage of one schedule.
+	// Return (e2e_time_usage, avg_time_usage*num_tasks)
 	// If the schedule is invalid, return -1
 	// Save the trace if SAVE_TRACE is true
 	template<bool SAVE_TRACE>
-	int get_time_usage(TaskSched const& task_sched, vector<TraceItem> &trace) {
+	pair<int, int> get_time_usage(TaskSched const& task_sched, vector<TraceItem> &trace) {
 		// The ending time for one stage of a microbatch of a model
 		// -1 means that the stage hasn't been scheduled
 		int stage_end_time[num_models][max_num_mbatches][2*num_stages];
@@ -119,6 +120,7 @@ private:
 		memset(num_fwded_mbatches, 0, sizeof(num_fwded_mbatches));
 		memset(num_bwded_mbatches, 0, sizeof(num_bwded_mbatches));
 		memset(mbatch_next_stage, 0, sizeof(mbatch_next_stage));
+		int summed_time_usage = 0;	// The sum of time usage of all tasks. = avg_time_usage * num_tasks
 
 		for (int i = 0; i < tot_num_mbatches*(2*num_stages); ++i) {
 			// Find a task to schedule
@@ -139,7 +141,7 @@ private:
 					continue;
 				}
 				if (!is_fwd && num_bwded_mbatches[node_id][model_id] == num_fwded_mbatches[node_id][model_id]) {
-					return -1;
+					return {-1, -1};
 				}
 
 				int mbatch_prev_task_end_time = stage_id == 0 ? 0 : stage_end_time[model_id][mbatch_id][stage_id-1];
@@ -151,6 +153,7 @@ private:
 				int cur_task_fin_time = cur_task_start_time + task_duration;
 
 				// Update the state
+				summed_time_usage += cur_task_fin_time;
 				stage_end_time[model_id][mbatch_id][stage_id] = cur_task_fin_time;
 				node_idle_time[node_id] = cur_task_fin_time;
 				next_task_index[node_id]++;
@@ -169,7 +172,7 @@ private:
 			}
 			// assert(task_found);
 			if (!task_found) {
-				return -1;
+				return {-1, -1};
 			}
 		}
 
@@ -177,11 +180,11 @@ private:
 		for (int node_id = 0; node_id < num_nodes; ++node_id) {
 			max_time_usage = std::max(max_time_usage, node_idle_time[node_id]);
 		}
-		return max_time_usage;
+		return {max_time_usage, summed_time_usage};
 	}
 
 	// A shorthand for get_time_usage with SAVE_TRACE is false
-	int get_time_usage(TaskSched const& task_sched) {
+	pair<int, int> get_time_usage(TaskSched const& task_sched) {
 		static vector<TraceItem> temp_trace;
 		return get_time_usage<false>(task_sched, temp_trace);
 	}
@@ -224,9 +227,10 @@ private:
 	// Run simulated annealing, and return a task_sched
 	TaskSched simulated_annealing() {
 		TaskSched cur_task_sched = get_init_task_sched();
-		int best_time_usage = get_time_usage(cur_task_sched);
-		int cur_time_usage = best_time_usage;
-		assert(best_time_usage != -1);
+		TaskSched best_task_sched = cur_task_sched;
+		pair<int, int> best_time_usage = get_time_usage(cur_task_sched);
+		pair<int, int> cur_time_usage = best_time_usage;
+		assert(best_time_usage.first != -1);
 		
 		double temperature = sim_anneal_config.init_temp;
 		double cooling_rate = sim_anneal_config.cooling_rate;
@@ -234,13 +238,13 @@ private:
 		while (temperature > sim_anneal_config.stop_temp) {
 			TaskSched new_task_sched = cur_task_sched;
 			disturb(rng, new_task_sched);
-			int new_time_usage = get_time_usage(new_task_sched);
+			pair<int, int> new_time_usage = get_time_usage(new_task_sched);
 			bool is_accept = false;
-			if (new_time_usage != -1) {
+			if (new_time_usage.first != -1) {
 				if (new_time_usage < cur_time_usage) {
 					is_accept = true;
 				} else {
-					double prob = std::exp((cur_time_usage - new_time_usage) / temperature);
+					double prob = std::exp((cur_time_usage.first - new_time_usage.first) / temperature);
 					double rnd = std::generate_canonical<double, 10>(rng);
 					if (rnd < prob) {
 						is_accept = true;
@@ -252,11 +256,12 @@ private:
 				cur_time_usage = new_time_usage;
 				if (cur_time_usage < best_time_usage) {
 					best_time_usage = cur_time_usage;
+					best_task_sched = cur_task_sched;
 				}
 			}
 			temperature *= cooling_rate;
 		}
-		return cur_task_sched;
+		return best_task_sched;
 	}
 
 public:
@@ -273,7 +278,7 @@ public:
 	Trace solve() {
 		TaskSched best_sched = simulated_annealing();
 		vector<TraceItem> trace;
-		int time_usage = get_time_usage<true>(best_sched, trace);
+		int time_usage = get_time_usage<true>(best_sched, trace).first;
 		return {
 			time_usage,
 			trace
