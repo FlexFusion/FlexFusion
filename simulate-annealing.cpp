@@ -1,254 +1,378 @@
-#include <array>
-#include <bits/stdc++.h>
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
 #include <random>
 #include <vector>
-using std::vector;
+using std::vector, std::string;
 
+class DualEgoSolver {
+public:
+	// The metadata for a model
+	struct ModelMeta {
+		// The number of microbatches
+		int num_mbatches;
+		// Forwarding time for one micro batch
+		int fwd_time;
+		// Backward propagation time for one micro bach
+		int bwd_time;
+		// This decides the mapping from stage id to node id
+		bool is_large_model;
+		// Colors used when print the trace
+		string fwd_color_code, bwd_color_code;
+	};
 
-// We define these numbers as a constexpr since we are going to allocate arrays with size N
-// You may use metaprogramming if you want to make it more flexible
-constexpr int NUM_STAGES = 8; // The number of pipeline stages
-constexpr int NUM_NODES = NUM_STAGES;
-constexpr int NUM_MODELS = 2; // The number of models
-constexpr int NUM_MBATCHS = 8; // The number of micro batches in each model. "mbatch" is micro batch
+	// An item in the final trace
+	struct TraceItem {
+		int start_time;
+		int duration;
+		int selected_model;
+		int selected_mbatch;
+		int selected_stage;
+	};
 
-// The forward and backward time of a micro batch in each model
-// We use constexpr to make it more efficient. This can be changed to a normal variable
-constexpr int MODEL_FWD_TIMES[NUM_MODELS] = {2, 1};
-constexpr int MODEL_BWD_TIMES[NUM_MODELS] = {4, 2};
+	// The trace, represents the final solution found by the solver
+	struct Trace {
+		int time_usage;
+		vector<TraceItem> trace;
+	};
 
-// A mapping from a stage in a model to the index of a node
-int STAGE_TO_NODE[NUM_MODELS][NUM_STAGES*2];
-void generate_stage_to_node() {
-	assert(NUM_MODELS == 1 || NUM_MODELS == 2);
-	for (int j = 0; j < NUM_STAGES*2; ++j) {
-		STAGE_TO_NODE[0][j] = (j < NUM_STAGES) ? j : NUM_STAGES*2-j-1;
+	// Define how simulated annealing is initialized
+	// TODO May add other initialization methods (like 1F1B) in the future
+	enum class sim_anneal_init_t {
+		FFFFBBBB
+	};
+
+	// Define how simulated annealing is disturbed
+	// TODO May add other disturbing methods in the future
+	enum class sim_anneal_disturb_t {
+		RANDOM_SWAP
+	};
+
+	// Configuration for simulated annealing
+	struct SimAnnealConfig {
+		// Initial temperature
+		double init_temp;
+		// Cooling rate
+		double cooling_rate;
+		// Stop temperature
+		double stop_temp;
+		// The random seed
+		int seed;
+		// The method for initialization
+		sim_anneal_init_t init_method;
+		// The method for disturbing
+		sim_anneal_disturb_t disturb_method;
+	};
+
+private:
+	int num_stages;
+	int num_nodes;	// The same as num_stages
+	int num_models;
+	vector<ModelMeta> model_metas;	// [num_models]
+	SimAnnealConfig sim_anneal_config;
+
+	int max_num_mbatches;
+	int tot_num_mbatches;
+
+	// The definition of a "task" during simulated annealing
+	struct Task {
+		int model_id;
+		bool is_fwd;
+	};
+
+	// The overall schedule (one acceptable but not necessarily optimal solution)
+	struct TaskSched {
+		vector<vector<Task>> tasks;	// [NUM_NODES, sum(m | all models){m.num_mbatches*2}]
+	};
+
+	// Map the stage of one model to a node
+	inline int stage_to_node(int model_id, int stage_id) {
+		const ModelMeta& meta = model_metas[model_id];
+		bool is_fwd = stage_id < num_stages;
+		if (meta.is_large_model)
+			return is_fwd ? stage_id : 2*num_stages-1-stage_id;
+		else
+		 	return is_fwd ? num_stages-1-stage_id : stage_id-num_stages;
 	}
-	if (NUM_MODELS == 2) {
-		for (int j = 0; j < NUM_STAGES*2; ++j) {
-			STAGE_TO_NODE[1][j] = (j < NUM_STAGES) ? NUM_STAGES-j-1 : j-NUM_STAGES;
-		}
-	}
-}
 
+	// Return the time usage of one schedule.
+	// If the schedule is invalid, return -1
+	// Save the trace if SAVE_TRACE is true
+	template<bool SAVE_TRACE>
+	int get_time_usage(TaskSched const& task_sched, vector<TraceItem> &trace) {
+		// The ending time for one stage of a microbatch of a model
+		// -1 means that the stage hasn't been scheduled
+		int stage_end_time[num_models][max_num_mbatches][2*num_stages];
+		// The next idle time for a node
+		int node_idle_time[num_nodes];
+		// The index of the next task within `task_sched[node_id]`
+		int next_task_index[num_nodes];
+		// The number of forwarded micro batches and backwarded micro batches
+		// for every model on every node
+		int num_fwded_mbatches[num_nodes][num_models], num_bwded_mbatches[num_nodes][num_models];
+		// The index of the next stage for a micro batch of one model
+		int mbatch_next_stage[num_models][max_num_mbatches];
+		memset(stage_end_time, -1, sizeof(stage_end_time));
+		memset(node_idle_time, 0, sizeof(node_idle_time));
+		memset(next_task_index, 0, sizeof(next_task_index));
+		memset(num_fwded_mbatches, 0, sizeof(num_fwded_mbatches));
+		memset(num_bwded_mbatches, 0, sizeof(num_bwded_mbatches));
+		memset(mbatch_next_stage, 0, sizeof(mbatch_next_stage));
 
-// constexpr int NUM_STAGES = 4;
-// constexpr int NUM_NODES = NUM_STAGES;
-// constexpr int NUM_MODELS = 1;
-// constexpr int NUM_MBATCHS = 4;
+		for (int i = 0; i < tot_num_mbatches*(2*num_stages); ++i) {
+			// Find a task to schedule
+			bool task_found = false;
+			// Find a node, and try to schedule its next task
+			for (int node_id = 0; node_id < num_nodes; ++node_id) {
+				if (next_task_index[node_id] == task_sched.tasks[node_id].size()) {
+					// No task, go fishing!
+					continue;
+				}
+				auto [model_id, is_fwd] = task_sched.tasks[node_id][next_task_index[node_id]];
+				const ModelMeta& model_meta = model_metas[model_id];
+				int mbatch_id = is_fwd ? num_fwded_mbatches[node_id][model_id] : num_bwded_mbatches[node_id][model_id];
+				int stage_id = mbatch_next_stage[model_id][mbatch_id];
+				int task_duration = is_fwd ? model_meta.fwd_time : model_meta.bwd_time;
+				int target_node_id = stage_to_node(model_id, stage_id);
+				if (target_node_id != node_id) {
+					continue;
+				}
+				if (!is_fwd && num_bwded_mbatches[node_id][model_id] == num_fwded_mbatches[node_id][model_id]) {
+					return -1;
+				}
 
-// constexpr int MODEL_FWD_TIMES[NUM_MODELS] = {1};
-// constexpr int MODEL_BWD_TIMES[NUM_MODELS] = {2};
+				int mbatch_prev_task_end_time = stage_id == 0 ? 0 : stage_end_time[model_id][mbatch_id][stage_id-1];
+				if (mbatch_prev_task_end_time == -1) {
+					continue;
+				}
+				int cur_node_next_idle_time = node_idle_time[node_id];
+				int cur_task_start_time = std::max(mbatch_prev_task_end_time, cur_node_next_idle_time);
+				int cur_task_fin_time = cur_task_start_time + task_duration;
 
-// // A mapping from a stage in a model to the index of a node
-// constexpr int STAGE_TO_NODE[NUM_MODELS][NUM_STAGES*2] = {
-//     {0, 1, 2, 3, 3, 2, 1, 0},
-// };
+				// Update the state
+				stage_end_time[model_id][mbatch_id][stage_id] = cur_task_fin_time;
+				node_idle_time[node_id] = cur_task_fin_time;
+				next_task_index[node_id]++;
+				if (is_fwd) {
+					num_fwded_mbatches[node_id][model_id]++;
+				} else {
+					num_bwded_mbatches[node_id][model_id]++;
+				}
+				mbatch_next_stage[model_id][mbatch_id]++;
 
-struct PathItem {
-    int start_time;
-    int duration;
-    int selected_model;
-    int selected_mbatch;
-    int selected_stage;
-};
-
-void print_path(int tot_time_usage, std::vector<PathItem> const& path) {
-    using std::string;
-    static string color_table[NUM_MODELS][2] = {
-        {"\033[31m", "\033[32m"},
-        {"\033[33m", "\033[34m"}
-    };
-    static string clear_color = "\033[0m";
-    auto colorize = [&](const string &text, int model_id, bool is_bwd) -> string {
-        return color_table[model_id][is_bwd] + text + clear_color;
-    };
-
-    struct Job {
-        bool is_occupied = false;
-        int model_id;
-        int mbatch_id;
-        bool is_bwd;
-    };
-    std::vector<Job> jobs[NUM_NODES];
-    for (auto &jobs_on_node : jobs) {
-        jobs_on_node.resize(tot_time_usage);
-    }
-    for (const PathItem& path_item : path) {
-        auto [start_time, duration, model_id, mbatch_id, selected_stage] = path_item;
-        int node_id = STAGE_TO_NODE[model_id][selected_stage];
-        // printf("Start time: %d, Duration: %d, Model: %d, Micro batch: %d, Node: %d\n", start_time, duration, model_id, mbatch_id, node_id);
-        bool is_bwd = selected_stage >= NUM_STAGES;
-        for (int t = start_time; t < start_time + duration; ++t) {
-            jobs[node_id][t] = {true, model_id, mbatch_id, is_bwd};
-        }
-    }
-
-    for (int i = 0; i < NUM_NODES; ++i) {
-        for (int t = 0; t < tot_time_usage; ++t) {
-            if (jobs[i][t].is_occupied) {
-                string text = "FB"[jobs[i][t].is_bwd] + std::to_string(jobs[i][t].mbatch_id);
-                printf("%s", colorize(text, jobs[i][t].model_id, jobs[i][t].is_bwd).c_str());
-            } else {
-                printf("  ");
-            }
-        }
-        printf("\n");
-    }
-}
-
-struct Task {
-	int model_id;
-	bool is_fwd;
-};
-
-struct TaskSched {
-	vector<Task> tasks[NUM_NODES];
-};
-
-TaskSched init_tasks() {
-	TaskSched res;
-	for (int model_id = 0; model_id < NUM_MODELS; ++model_id) {
-		for (int stage_id = 0; stage_id < NUM_STAGES; ++stage_id)
-			for (int mbatch_id = 0; mbatch_id < NUM_MBATCHS; ++mbatch_id)
-				res.tasks[STAGE_TO_NODE[model_id][stage_id]].push_back({model_id, true});
-		for (int stage_id = NUM_STAGES; stage_id < 2*NUM_STAGES; ++stage_id)
-			for (int mbatch_id = 0; mbatch_id < NUM_MBATCHS; ++mbatch_id)
-				res.tasks[STAGE_TO_NODE[model_id][stage_id]].push_back({model_id, false});
-	}
-	// #define T true
-	// #define F false
-	// res.tasks[0] = {{0, T}, {0, T}, {0, T}, {0, T}, {1, T}, {1, F}, {1, T}, {1, T}, {1, T}, {1, F}, {1, F}, {0, F}, {1, F}, {0, F}, {0, F}, {0, F}};
-	// res.tasks[1] = {{0, T}, {0, T}, {0, T}, {0, T}, {1, T}, {1, T}, {1, T}, {1, T}, {1, F}, {0, F}, {1, F}, {1, F}, {0, F}, {1, F}, {0, F}, {0, F}};
-	// res.tasks[2] = {{1, T}, {1, T}, {1, T}, {0, T}, {0, T}, {0, T}, {1, T}, {0, F}, {0, T}, {1, F}, {0, F}, {1, F}, {0, F}, {0, F}, {1, F}, {1, F}};
-	// res.tasks[3] = {{1, T}, {1, T}, {1, T}, {1, T}, {0, T}, {0, F}, {0, T}, {0, T}, {0, F}, {0, T}, {0, F}, {0, F}, {1, F}, {1, F}, {1, F}, {1, F}};
-	return res;
-}
-
-template<bool SAVE_PATH>
-int get_time_usage(TaskSched const& tash_sched, vector<PathItem> &path) {
-	static int stage_end_time[NUM_MODELS][NUM_MBATCHS][2*NUM_STAGES];
-	static int node_idle_time[NUM_NODES];
-	static int next_task_index[NUM_NODES];
-	static int num_fwded_mbatches[NUM_NODES][NUM_MODELS], num_bwded_mbatches[NUM_NODES][NUM_MODELS];
-	static int mbatch_next_stage[NUM_MODELS][NUM_MBATCHS];
-	memset(stage_end_time, -1, sizeof(stage_end_time));
-	memset(node_idle_time, 0, sizeof(node_idle_time));
-	memset(next_task_index, 0, sizeof(next_task_index));
-	memset(num_fwded_mbatches, 0, sizeof(num_fwded_mbatches));
-	memset(num_bwded_mbatches, 0, sizeof(num_bwded_mbatches));
-	memset(mbatch_next_stage, 0, sizeof(mbatch_next_stage));
-
-	for (int i = 0; i < NUM_MODELS*(2*NUM_STAGES)*NUM_MBATCHS; ++i) {
-		// Find a task to schedule
-		bool task_found = false;
-		for (int node_id = 0; node_id < NUM_NODES; ++node_id) {
-			if (next_task_index[node_id] == tash_sched.tasks[node_id].size()) {
-				continue;
+				if constexpr(SAVE_TRACE) {
+					trace.push_back({cur_task_start_time, task_duration, model_id, mbatch_id, stage_id});
+				}
+				task_found = true;
+				break;
 			}
-			auto [model_id, is_fwd] = tash_sched.tasks[node_id][next_task_index[node_id]];
-			int mbatch_id = is_fwd ? num_fwded_mbatches[node_id][model_id] : num_bwded_mbatches[node_id][model_id];
-			int stage_id = mbatch_next_stage[model_id][mbatch_id];
-			int task_duration = is_fwd ? MODEL_FWD_TIMES[model_id] : MODEL_BWD_TIMES[model_id];
-			if (STAGE_TO_NODE[model_id][stage_id] != node_id) {
-				continue;
-			}
-			if (!is_fwd && num_bwded_mbatches[node_id][model_id] == num_fwded_mbatches[node_id][model_id]) {
+			// assert(task_found);
+			if (!task_found) {
 				return -1;
 			}
-
-			int mbatch_prev_task_end_time = stage_id == 0 ? 0 : stage_end_time[model_id][mbatch_id][stage_id-1];
-			if (mbatch_prev_task_end_time == -1) {
-				continue;
-			}
-			int cur_node_next_idle_time = node_idle_time[node_id];
-			int cur_task_start_time = std::max(mbatch_prev_task_end_time, cur_node_next_idle_time);
-			int cur_task_fin_time = cur_task_start_time + task_duration;
-
-			// Update the state
-			stage_end_time[model_id][mbatch_id][stage_id] = cur_task_fin_time;
-			node_idle_time[node_id] = cur_task_fin_time;
-			next_task_index[node_id]++;
-			if (is_fwd) {
-				num_fwded_mbatches[node_id][model_id]++;
-			} else {
-				num_bwded_mbatches[node_id][model_id]++;
-			}
-			mbatch_next_stage[model_id][mbatch_id]++;
-
-			if constexpr(SAVE_PATH) {
-				path.push_back({cur_task_start_time, task_duration, model_id, mbatch_id, stage_id});
-			}
-			task_found = true;
-			break;
 		}
-		// assert(task_found);
-		if (!task_found) {
-			return -1;
+
+		int max_time_usage = 0;
+		for (int node_id = 0; node_id < num_nodes; ++node_id) {
+			max_time_usage = std::max(max_time_usage, node_idle_time[node_id]);
 		}
+		return max_time_usage;
 	}
 
-	int max_time_usage = 0;
-	for (int node_id = 0; node_id < NUM_NODES; ++node_id) {
-		max_time_usage = std::max(max_time_usage, node_idle_time[node_id]);
+	// A shorthand for get_time_usage with SAVE_TRACE is false
+	int get_time_usage(TaskSched const& task_sched) {
+		static vector<TraceItem> temp_trace;
+		return get_time_usage<false>(task_sched, temp_trace);
 	}
-	return max_time_usage;
-}
 
-int get_time_usage(TaskSched const& task_sched) {
-	vector<PathItem> temp_path;
-	return get_time_usage<false>(task_sched, temp_path);
-}
-
-TaskSched simulated_annealing(int SEED) {
-	TaskSched cur_task_sched = init_tasks();
-	int best_time_usage = get_time_usage(cur_task_sched);
-	int cur_time_usage = best_time_usage;
-	
-	double temperature = 1e7;
-	static constexpr double COOLING_RATE = 0.99999;
-	std::mt19937 rng(SEED);
-	while (temperature > 1e-9) {
-		TaskSched new_task_sched = cur_task_sched;
-		int node_id = rng() % NUM_NODES;
-		int taskA_id = rng() % new_task_sched.tasks[node_id].size();
-		int taskB_id = rng() % new_task_sched.tasks[node_id].size();
-		std::swap(new_task_sched.tasks[node_id][taskA_id], new_task_sched.tasks[node_id][taskB_id]);
-		int new_time_usage = get_time_usage(new_task_sched);
-		bool is_accept = false;
-		if (new_time_usage != -1) {
-			if (new_time_usage < cur_time_usage) {
-				is_accept = true;
-			} else {
-				double prob = std::exp((cur_time_usage - new_time_usage) / temperature);
-				double rnd = std::generate_canonical<double, 10>(rng);
-				if (rnd < prob) {
-					is_accept = true;
+	// Get the initial task sched
+	TaskSched get_init_task_sched() {
+		TaskSched res;
+		res.tasks.resize(num_nodes);
+		for (int node_id = 0; node_id < num_nodes; ++node_id)
+			res.tasks[node_id].reserve(2*tot_num_mbatches);
+		if (sim_anneal_config.init_method == sim_anneal_init_t::FFFFBBBB) {
+			for (int node_id = 0; node_id < num_nodes; ++node_id) {
+				for (int model_id = 0; model_id < num_models; ++model_id) {
+					int num_mbatches = model_metas[model_id].num_mbatches;
+					for (int _ = 0; _ < num_mbatches; ++_)
+						res.tasks[node_id].push_back({model_id, true});
+				}
+				for (int model_id = 0; model_id < num_models; ++model_id) {
+					int num_mbatches = model_metas[model_id].num_mbatches;
+					for (int _ = 0; _ < num_mbatches; ++_)
+						res.tasks[node_id].push_back({model_id, false});
 				}
 			}
-		}
-		if (is_accept) {
-			cur_task_sched = new_task_sched;
-			cur_time_usage = new_time_usage;
-			if (cur_time_usage < best_time_usage) {
-				best_time_usage = cur_time_usage;
-			}
 		} else {
+			assert(0);
+		}
+		return res;
+	}
+
+	// Disturb
+	void disturb(std::mt19937 &rng, TaskSched &new_task_sched) {
+		if (sim_anneal_config.disturb_method == sim_anneal_disturb_t::RANDOM_SWAP) {
+			int node_id = rng() % num_nodes;
+			int taskA_id = rng() % new_task_sched.tasks[node_id].size();
+			int taskB_id = rng() % new_task_sched.tasks[node_id].size();
 			std::swap(new_task_sched.tasks[node_id][taskA_id], new_task_sched.tasks[node_id][taskB_id]);
 		}
-		temperature *= COOLING_RATE;
 	}
-	return cur_task_sched;
-}
+
+	// Run simulated annealing, and return a task_sched
+	TaskSched simulated_annealing() {
+		TaskSched cur_task_sched = get_init_task_sched();
+		int best_time_usage = get_time_usage(cur_task_sched);
+		int cur_time_usage = best_time_usage;
+		assert(best_time_usage != -1);
+		
+		double temperature = sim_anneal_config.init_temp;
+		double cooling_rate = sim_anneal_config.cooling_rate;
+		std::mt19937 rng(sim_anneal_config.seed);
+		while (temperature > sim_anneal_config.stop_temp) {
+			TaskSched new_task_sched = cur_task_sched;
+			disturb(rng, new_task_sched);
+			int new_time_usage = get_time_usage(new_task_sched);
+			bool is_accept = false;
+			if (new_time_usage != -1) {
+				if (new_time_usage < cur_time_usage) {
+					is_accept = true;
+				} else {
+					double prob = std::exp((cur_time_usage - new_time_usage) / temperature);
+					double rnd = std::generate_canonical<double, 10>(rng);
+					if (rnd < prob) {
+						is_accept = true;
+					}
+				}
+			}
+			if (is_accept) {
+				cur_task_sched = new_task_sched;
+				cur_time_usage = new_time_usage;
+				if (cur_time_usage < best_time_usage) {
+					best_time_usage = cur_time_usage;
+				}
+			}
+			temperature *= cooling_rate;
+		}
+		return cur_task_sched;
+	}
+
+public:
+	DualEgoSolver(int num_stages, vector<ModelMeta> const& model_metas, SimAnnealConfig const& sim_anneal_config):
+		num_stages(num_stages), num_nodes(num_stages), num_models(model_metas.size()), model_metas(model_metas), sim_anneal_config(sim_anneal_config) {
+		max_num_mbatches = 0;
+		tot_num_mbatches = 0;
+		for (const ModelMeta& meta : model_metas) {
+			max_num_mbatches = std::max(max_num_mbatches, meta.num_mbatches);
+			tot_num_mbatches += meta.num_mbatches;
+		}
+	}
+
+	Trace solve() {
+		TaskSched best_sched = simulated_annealing();
+		vector<TraceItem> trace;
+		int time_usage = get_time_usage<true>(best_sched, trace);
+		return {
+			time_usage,
+			trace
+		};
+	}
+
+	void print_trace(Trace const& trace) {
+		using std::string;
+		auto colorize = [&](const string &text, int model_id, bool is_bwd) -> string {
+			static string clear_color = "\033[0m";
+			string color_code = is_bwd ? model_metas[model_id].bwd_color_code : model_metas[model_id].fwd_color_code;
+			return color_code + text + clear_color;
+		};
+
+		struct Job {
+			bool is_occupied = false;
+			int model_id;
+			int mbatch_id;
+			bool is_bwd;
+		};
+		std::vector<Job> jobs[num_nodes];
+		for (auto &jobs_on_node : jobs) {
+			jobs_on_node.resize(trace.time_usage);
+		}
+		for (const TraceItem& trace_item : trace.trace) {
+			auto [start_time, duration, model_id, mbatch_id, selected_stage] = trace_item;
+			int node_id = stage_to_node(model_id, selected_stage);
+			// printf("Start time: %d, Duration: %d, Model: %d, Micro batch: %d, Node: %d\n", start_time, duration, model_id, mbatch_id, node_id);
+			bool is_bwd = selected_stage >= num_stages;
+			for (int t = start_time; t < start_time + duration; ++t) {
+				jobs[node_id][t] = {true, model_id, mbatch_id, is_bwd};
+			}
+		}
+
+		for (int i = 0; i < num_nodes; ++i) {
+			for (int t = 0; t < trace.time_usage; ++t) {
+				if (jobs[i][t].is_occupied) {
+					string text = "FB"[jobs[i][t].is_bwd] + std::to_string(jobs[i][t].mbatch_id);
+					printf("%s", colorize(text, jobs[i][t].model_id, jobs[i][t].is_bwd).c_str());
+				} else {
+					printf("  ");
+				}
+			}
+			printf("\n");
+		}
+	}
+};
 
 int main() {
-	generate_stage_to_node();
-	for (int seed : vector<int>{0, 114514, 19981207, 20031208, 20000317}) {
-		TaskSched task_sched = simulated_annealing(seed);
-		vector<PathItem> path;
-		int result = get_time_usage<true>(task_sched, path);
-		printf("Minimum time usage: %d\n", result);
-		print_path(result, path);
+	int num_stages = 4;
+	int num_small_models = 4;
+	int large_model_fwd_time = 2;
+	int large_model_bwd_time = 4;
+	int small_model_fwd_time = 1;
+	int small_model_bwd_time = 2;
+	int num_large_model_mbatchs = 4;
+	int num_small_model_mbatchs = 1;
+
+	// int num_stages = 8;
+	// int num_small_models = 1;
+	// int large_model_fwd_time = 2;
+	// int large_model_bwd_time = 4;
+	// int small_model_fwd_time = 1;
+	// int small_model_bwd_time = 2;
+	// int num_large_model_mbatchs = 8;
+	// int num_small_model_mbatchs = 8;
+
+	vector<DualEgoSolver::ModelMeta> model_metas;
+	model_metas.push_back({
+		num_large_model_mbatchs,
+		large_model_fwd_time,
+		large_model_bwd_time,
+		true,
+		"\033[31m", "\033[32m"
+	});
+	for (int i = 0; i < num_small_models; ++i) {
+		model_metas.push_back({
+			num_small_model_mbatchs,
+			small_model_fwd_time,
+			small_model_bwd_time,
+			false,
+			"\033[33m", "\033[34m"
+		});
 	}
+
+	DualEgoSolver::SimAnnealConfig sim_anneal_config = {
+		1e7,
+		0.99999,
+		1e-9,
+		0,
+		DualEgoSolver::sim_anneal_init_t::FFFFBBBB,
+		DualEgoSolver::sim_anneal_disturb_t::RANDOM_SWAP
+	};
+
+	DualEgoSolver solver(num_stages, model_metas, sim_anneal_config);
+	DualEgoSolver::Trace best_trace = solver.solve();
+
+	printf("Best time usage: %d\n", best_trace.time_usage);
+	solver.print_trace(best_trace);
+
 	return 0;
 }
