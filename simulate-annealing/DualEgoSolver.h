@@ -16,8 +16,9 @@ public:
 		int fwd_time;
 		// Backward propagation time for one micro bach
 		int bwd_time;
-		// This decides the mapping from stage id to node id
-		bool is_large_model;
+		// The mapping from stages to node_id
+		// Should only contain FWD stages
+		vector<int> stage2node;
 		// Colors used when print the trace
 		string fwd_color_code, bwd_color_code;
 	};
@@ -66,14 +67,14 @@ public:
 	};
 
 private:
-	int num_stages;
-	int num_nodes;	// The same as num_stages
+	int num_nodes;
 	int num_models;
 	vector<ModelMeta> model_metas;	// [num_models]
 	SimAnnealConfig sim_anneal_config;
 
 	int max_num_mbatches;
-	int tot_num_mbatches;
+	int max_num_stages;
+	int tot_num_mbatches_times_stages;
 
 	// The definition of a "task" during simulated annealing
 	struct Task {
@@ -89,11 +90,8 @@ private:
 	// Map the stage of one model to a node
 	inline int stage_to_node(int model_id, int stage_id) {
 		const ModelMeta& meta = model_metas[model_id];
-		bool is_fwd = stage_id < num_stages;
-		if (meta.is_large_model)
-			return is_fwd ? stage_id : 2*num_stages-1-stage_id;
-		else
-		 	return is_fwd ? num_stages-1-stage_id : stage_id-num_stages;
+		int num_stages = (int)meta.stage2node.size();
+		return stage_id < num_stages ? meta.stage2node[stage_id] : meta.stage2node[2*num_stages-1-stage_id];
 	}
 
 	// Return the time usage of one schedule.
@@ -104,7 +102,7 @@ private:
 	pair<int, int> get_time_usage(TaskSched const& task_sched, vector<TraceItem> &trace) {
 		// The ending time for one stage of a microbatch of a model
 		// -1 means that the stage hasn't been scheduled
-		int stage_end_time[num_models][max_num_mbatches][2*num_stages];
+		int stage_end_time[num_models][max_num_mbatches][2*max_num_stages];
 		// The next idle time for a node
 		int node_idle_time[num_nodes];
 		// The index of the next task within `task_sched[node_id]`
@@ -122,7 +120,7 @@ private:
 		memset(mbatch_next_stage, 0, sizeof(mbatch_next_stage));
 		int summed_time_usage = 0;	// The sum of time usage of all tasks. = avg_time_usage * num_tasks
 
-		for (int i = 0; i < tot_num_mbatches*(2*num_stages); ++i) {
+		for (int i = 0; i < 2*tot_num_mbatches_times_stages; ++i) {
 			// Find a task to schedule
 			bool task_found = false;
 			// Find a node, and try to schedule its next task
@@ -193,20 +191,21 @@ private:
 	TaskSched get_init_task_sched() {
 		TaskSched res;
 		res.tasks.resize(num_nodes);
-		for (int node_id = 0; node_id < num_nodes; ++node_id)
-			res.tasks[node_id].reserve(2*tot_num_mbatches);
+		// for (int node_id = 0; node_id < num_nodes; ++node_id)
+		// 	res.tasks[node_id].reserve(2*tot_num_mbatches);
 		if (sim_anneal_config.init_method == sim_anneal_init_t::FFFFBBBB) {
-			for (int node_id = 0; node_id < num_nodes; ++node_id) {
-				for (int model_id = 0; model_id < num_models; ++model_id) {
-					int num_mbatches = model_metas[model_id].num_mbatches;
-					for (int _ = 0; _ < num_mbatches; ++_)
-						res.tasks[node_id].push_back({model_id, true});
-				}
-				for (int model_id = 0; model_id < num_models; ++model_id) {
-					int num_mbatches = model_metas[model_id].num_mbatches;
-					for (int _ = 0; _ < num_mbatches; ++_)
-						res.tasks[node_id].push_back({model_id, false});
-				}
+			for (int model_id = 0; model_id < num_models; ++model_id) {
+				const ModelMeta& meta = model_metas[model_id];
+				for (int stage_id = 0; stage_id < (int)meta.stage2node.size(); ++stage_id)
+					for (int _ = 0; _ < meta.num_mbatches; ++_)
+						res.tasks[stage_to_node(model_id, stage_id)].push_back({model_id, true});
+			}
+			for (int model_id = 0; model_id < num_models; ++model_id) {
+				const ModelMeta& meta = model_metas[model_id];
+				int num_stages = (int)meta.stage2node.size();
+				for (int stage_id = num_stages; stage_id < 2*num_stages; ++stage_id)
+					for (int _ = 0; _ < meta.num_mbatches; ++_)
+						res.tasks[stage_to_node(model_id, stage_id)].push_back({model_id, false});
 			}
 		} else {
 			assert(0);
@@ -266,12 +265,15 @@ private:
 
 public:
 	DualEgoSolver(int num_stages, vector<ModelMeta> const& model_metas, SimAnnealConfig const& sim_anneal_config):
-		num_stages(num_stages), num_nodes(num_stages), num_models(model_metas.size()), model_metas(model_metas), sim_anneal_config(sim_anneal_config) {
+		num_nodes(num_stages), num_models(model_metas.size()), model_metas(model_metas), sim_anneal_config(sim_anneal_config) {
 		max_num_mbatches = 0;
-		tot_num_mbatches = 0;
+		max_num_stages = 0;
+		tot_num_mbatches_times_stages = 0;
 		for (const ModelMeta& meta : model_metas) {
+			int cur_num_stages = (int)meta.stage2node.size();
 			max_num_mbatches = std::max(max_num_mbatches, meta.num_mbatches);
-			tot_num_mbatches += meta.num_mbatches;
+			max_num_stages = std::max(max_num_stages, cur_num_stages);
+			tot_num_mbatches_times_stages += meta.num_mbatches * cur_num_stages;
 		}
 	}
 
@@ -307,7 +309,7 @@ public:
 			auto [start_time, duration, model_id, mbatch_id, selected_stage] = trace_item;
 			int node_id = stage_to_node(model_id, selected_stage);
 			// printf("Start time: %d, Duration: %d, Model: %d, Micro batch: %d, Node: %d\n", start_time, duration, model_id, mbatch_id, node_id);
-			bool is_bwd = selected_stage >= num_stages;
+			bool is_bwd = selected_stage >= (int)model_metas[model_id].stage2node.size();
 			for (int t = start_time; t < start_time + duration; ++t) {
 				jobs[node_id][t] = {true, model_id, mbatch_id, is_bwd};
 			}

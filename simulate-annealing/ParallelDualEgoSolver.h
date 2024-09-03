@@ -23,15 +23,14 @@ private:
 	static constexpr int TAG_JOB_CONFIG = 3;
 
 	int rank, world_size;
-	int num_stages;
+	
+	int num_nodes;
 	vector<ds::ModelMeta> model_metas;
 	vector<ds::SimAnnealConfig> sim_anneal_configs;
 
+	int num_traceitems;
+
 	ds::Trace run_master_routine() {
-		int sum_num_mbatches = 0;
-		for (ds::ModelMeta const& meta : model_metas)
-			sum_num_mbatches += meta.num_mbatches;
-		int num_traceitems = sum_num_mbatches * (2*num_stages);
 		size_t trace_size = sizeof(ds::Trace::time_usage) + sizeof(ds::TraceItem)*num_traceitems;
 		char* recv_buf = new char[trace_size];
 
@@ -82,10 +81,6 @@ private:
 	}
 
 	void run_worker_routine() {
-		int sum_num_mbatches = 0;
-		for (ds::ModelMeta const& meta : model_metas)
-			sum_num_mbatches += meta.num_mbatches;
-		int num_traceitems = sum_num_mbatches * (2*num_stages);
 		size_t trace_size = sizeof(ds::Trace::time_usage) + sizeof(ds::TraceItem)*num_traceitems;
 		char* send_buf = new char[trace_size];
 		MPI_Status status;
@@ -102,7 +97,7 @@ private:
 			MPI_CHECK(MPI_Recv(&cur_config, sizeof(ds::SimAnnealConfig), MPI_CHAR, 0, TAG_JOB_CONFIG, MPI_COMM_WORLD, &status));
 			printf("Worker %d received job with seed %d\n", rank-1, cur_config.seed);
 			// Run it
-			DualEgoSolver solver(num_stages, model_metas, cur_config);
+			DualEgoSolver solver(num_nodes, model_metas, cur_config);
 			ds::Trace cur_trace = solver.solve();
 			printf("Worker %d gets an answer of %d\n", rank-1, cur_trace.time_usage);
 			assert((int)cur_trace.trace.size() == num_traceitems);
@@ -119,10 +114,10 @@ private:
 
 public:
 	ParallelDualEgoSolver(
-		int num_stages,
+		int num_nodes,
 		vector<ds::ModelMeta> const& model_metas,
 		vector<ds::SimAnnealConfig> const& sim_anneal_config):
-		num_stages(num_stages),
+		num_nodes(num_nodes),
 		model_metas(model_metas),
 		sim_anneal_configs(sim_anneal_config) {
 		int mpi_inited;
@@ -139,6 +134,12 @@ public:
 			printf("Master started with pid = %d\n", pid);
 		} else {
 			printf("Worker %d started with pid = %d\n", rank-1, pid);
+		}
+
+		num_traceitems = 0;
+		for (const ds::ModelMeta &meta : model_metas) {
+			int num_stages = meta.stage2node.size();
+			num_traceitems += 2 * meta.num_mbatches * num_stages;
 		}
 	}
 
