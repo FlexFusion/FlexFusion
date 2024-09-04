@@ -75,7 +75,7 @@ private:
 		}
 
 		delete[] recv_buf;
-		MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+		usleep(100000);	// Sleep for 0.1s to let workers end first
 		return best_trace;
 	}
 
@@ -107,7 +107,6 @@ private:
 		}
 
 		printf("Worker %d finds no job, exiting...\n", rank-1);
-		MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 		delete[] send_buf;
 	}
 
