@@ -1,6 +1,5 @@
 #include "ParallelDualEgoSolver.h"
 #include "mpi.h"
-#include "mpi_proto.h"
 
 int main(int argc, char* argv[]) {
 	int num_nodes = 8;

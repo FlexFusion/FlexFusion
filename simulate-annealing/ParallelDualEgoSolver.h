@@ -4,7 +4,6 @@
 #include <limits>
 
 #include "mpi.h"
-#include "mpi_proto.h"
 #include "unistd.h"
 
 #define MPI_CHECK(x) \
