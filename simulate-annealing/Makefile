@@ -1,9 +1,9 @@
 # Compilers
-CXX = g++-11
+CXX ?= g++-11
 CXXFLAGS = -Wall -Ofast -march=native
 
-MPICXX = mpicxx
-MPICXXFLAGS = -Wall -Ofast -march=native
+MPICXX ?= mpicxx
+MPICXXFLAGS ?= -Wall -Ofast -march=native
 
 # Targets
 TARGETS = driver parallel_driver
