@@ -2,34 +2,34 @@
 #include "mpi.h"
 
 int main(int argc, char* argv[]) {
-	int num_nodes = 8;
 
 	// The large model
 	vector<DualEgoSolver::ModelMeta> model_metas;
+	int num_nodes = 16;
 	model_metas.push_back({
-		8,
-		2,
-		4,
-		{0, 1, 2, 3, 4, 5, 6, 7},
-		"\033[31m", "\033[32m"
+		32,							// #micro-batches
+		2,							// fwd-time
+		4,							// bwd-time
+		{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},				// stage2node mapping
+		"\033[31m", "\033[32m"		// fwd-color, bwd-color
 	});
 	model_metas.push_back({
-		4,
+		16,
 		1,
 		2,
-		{3,2, 1, 0},
+		{15, 14, 13, 12, 11, 10, 9, 8},
 		"\033[33m", "\033[34m"
 	});
 	model_metas.push_back({
-		4,
+		16,
 		1,
 		2,
-		{7, 6, 5, 4},
+		{7, 6, 5, 4, 3, 2, 1, 0},
 		"\033[35m", "\033[36m"
 	});
 
 	vector<DualEgoSolver::SimAnnealConfig> sim_anneal_configs;
-	for (int seed = 0; seed < 30; ++seed) {
+	for (int seed = 0; seed < 768; ++seed) {
 		DualEgoSolver::SimAnnealConfig sim_anneal_config = {
 			1e6,
 			0.99999,
