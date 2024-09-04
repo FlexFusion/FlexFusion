@@ -146,9 +146,7 @@ private:
 				}
 
 				int mbatch_prev_task_end_time = stage_id == 0 ? 0 : stage_end_time[model_id][mbatch_id][stage_id-1];
-				if (mbatch_prev_task_end_time == -1) {
-					continue;
-				}
+				// assert(mbatch_prev_task_end_time != -1);	// Can never be -1 since stage_id is already mbatch_next_stage[model_id][mbatch_id]
 				int cur_node_next_idle_time = node_idle_time[node_id];
 				int cur_task_start_time = std::max(mbatch_prev_task_end_time, cur_node_next_idle_time);
 				int cur_task_fin_time = cur_task_start_time + task_duration;
