@@ -120,11 +120,14 @@ private:
 		memset(mbatch_next_stage, 0, sizeof(mbatch_next_stage));
 		int summed_time_usage = 0;	// The sum of time usage of all tasks. = avg_time_usage * num_tasks
 
+		int node_id = num_nodes-1;
 		for (int i = 0; i < 2*tot_num_mbatches_times_stages; ++i) {
 			// Find a task to schedule
 			bool task_found = false;
 			// Find a node, and try to schedule its next task
-			for (int node_id = 0; node_id < num_nodes; ++node_id) {
+			// Here we start from the node we chosen last time to optimize performance
+			for (int _ = 0; _ < num_nodes; ++_) {
+				node_id = (node_id+1) % num_nodes;
 				if (next_task_index[node_id] == (int)task_sched.tasks[node_id].size()) {
 					// No task, go fishing!
 					continue;
