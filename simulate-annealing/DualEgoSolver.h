@@ -100,9 +100,8 @@ private:
 	// Save the trace if SAVE_TRACE is true
 	template<bool SAVE_TRACE>
 	pair<int, int> get_time_usage(TaskSched const& task_sched, vector<TraceItem> &trace) {
-		// The ending time for one stage of a microbatch of a model
-		// -1 means that the stage hasn't been scheduled
-		int stage_end_time[num_models][max_num_mbatches][2*max_num_stages];
+		// The ending time for the last stage of a microbatch of a model
+		int last_stage_end_time[num_models][max_num_mbatches];
 		// The next idle time for a node
 		int node_idle_time[num_nodes];
 		// The index of the next task within `task_sched[node_id]`
@@ -112,7 +111,6 @@ private:
 		int num_fwded_mbatches[num_nodes][num_models], num_bwded_mbatches[num_nodes][num_models];
 		// The index of the next stage for a micro batch of one model
 		int mbatch_next_stage[num_models][max_num_mbatches];
-		memset(stage_end_time, -1, sizeof(stage_end_time));
 		memset(node_idle_time, 0, sizeof(node_idle_time));
 		memset(next_task_index, 0, sizeof(next_task_index));
 		memset(num_fwded_mbatches, 0, sizeof(num_fwded_mbatches));
@@ -133,10 +131,8 @@ private:
 					continue;
 				}
 				auto [model_id, is_fwd] = task_sched.tasks[node_id][next_task_index[node_id]];
-				const ModelMeta& model_meta = model_metas[model_id];
 				int mbatch_id = is_fwd ? num_fwded_mbatches[node_id][model_id] : num_bwded_mbatches[node_id][model_id];
 				int stage_id = mbatch_next_stage[model_id][mbatch_id];
-				int task_duration = is_fwd ? model_meta.fwd_time : model_meta.bwd_time;
 				int target_node_id = stage_to_node(model_id, stage_id);
 				if (target_node_id != node_id) {
 					continue;
@@ -144,16 +140,18 @@ private:
 				if (!is_fwd && num_bwded_mbatches[node_id][model_id] == num_fwded_mbatches[node_id][model_id]) {
 					return {-1, -1};
 				}
+				
+				const ModelMeta& model_meta = model_metas[model_id];
+				int task_duration = is_fwd ? model_meta.fwd_time : model_meta.bwd_time;
 
-				int mbatch_prev_task_end_time = stage_id == 0 ? 0 : stage_end_time[model_id][mbatch_id][stage_id-1];
-				// assert(mbatch_prev_task_end_time != -1);	// Can never be -1 since stage_id is already mbatch_next_stage[model_id][mbatch_id]
+				int mbatch_prev_task_end_time = stage_id == 0 ? 0 : last_stage_end_time[model_id][mbatch_id];
 				int cur_node_next_idle_time = node_idle_time[node_id];
 				int cur_task_start_time = std::max(mbatch_prev_task_end_time, cur_node_next_idle_time);
 				int cur_task_fin_time = cur_task_start_time + task_duration;
 
 				// Update the state
 				summed_time_usage += cur_task_fin_time;
-				stage_end_time[model_id][mbatch_id][stage_id] = cur_task_fin_time;
+				last_stage_end_time[model_id][mbatch_id] = cur_task_fin_time;
 				node_idle_time[node_id] = cur_task_fin_time;
 				next_task_index[node_id]++;
 				if (is_fwd) {
