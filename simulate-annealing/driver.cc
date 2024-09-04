@@ -6,11 +6,11 @@ int main() {
 	// The large model
 	vector<DualEgoSolver::ModelMeta> model_metas;
 	model_metas.push_back({
-		4,
-		2,
-		4,
-		{0, 1, 2, 3},
-		"\033[31m", "\033[32m"
+		4,							// #micro-batches
+		2,							// fwd-time
+		4,							// bwd-time
+		{0, 1, 2, 3},				// stage2node mapping
+		"\033[31m", "\033[32m"		// fwd-color, bwd-color
 	});
 	model_metas.push_back({
 		2,
