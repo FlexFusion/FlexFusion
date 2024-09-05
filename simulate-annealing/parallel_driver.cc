@@ -19,29 +19,38 @@ int main(int argc, char* argv[]) {
 		16,
 		1,
 		2,
-		{15, 14, 13, 12, 11, 10, 9, 8},
+		{7, 6, 5, 4, 3, 2, 1, 0},
 		1,
-		"\033[33m", "\033[34m"
+		"\033[35m", "\033[36m"
 	});
 	model_metas.push_back({
 		16,
 		1,
 		2,
-		{7, 6, 5, 4, 3, 2, 1, 0},
+		{15, 14, 13, 12, 11, 10, 9, 8},
 		1,
-		"\033[35m", "\033[36m"
+		"\033[33m", "\033[34m"
 	});
 
+	vector<ds::sim_anneal_init_t> candidte_init_methods = {
+		ds::sim_anneal_init_t::FFFFBBBB_0,
+		ds::sim_anneal_init_t::FFFFBBBB_1,
+		ds::sim_anneal_init_t::FFFFBBBB_OPTIM_3_MODELS,
+	};
 	vector<ds::SimAnnealConfig> sim_anneal_configs;
-	for (int seed = 0; seed < (768-1)*16; ++seed) {
-		for (ds::sim_anneal_disturb_t disturb_method : vector<ds::sim_anneal_disturb_t>{ds::sim_anneal_disturb_t::RANDOM_SWAP, ds::sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP}) {
+	for (int seed = 0; seed < (256-1)*4; ++seed) {
+		for (ds::sim_anneal_init_t init_method : candidte_init_methods) {
 			ds::SimAnnealConfig sim_anneal_config = {
-				1e6,
-				0.99999,
-				1e-8,
+				4,
+				0.999995,
+				1e-16,
+				DualEgoSolver::sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP,
+				4,
+				0.999995,
+				1e-16,
+				DualEgoSolver::sim_anneal_disturb_t::RANDOM_MOVE,
 				seed,
-				ds::sim_anneal_init_t::FFFFBBBB,
-				disturb_method
+				init_method
 			};
 			sim_anneal_configs.push_back(sim_anneal_config);
 		}

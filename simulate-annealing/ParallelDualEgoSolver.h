@@ -72,6 +72,7 @@ private:
 			ds::Trace cur_trace = {
 				cur_trace_ptr->time_usage,
 				cur_trace_ptr->peak_memory_usage,
+				cur_trace_ptr->sum_peak_memory_usage,
 				cur_trace_ptr->fin_time_sum,
 				{}
 			};
@@ -120,12 +121,13 @@ private:
 			// Run it
 			DualEgoSolver solver(num_nodes, model_metas, cur_config);
 			ds::Trace cur_trace = solver.solve();
-			printf("Worker %d gets an answer of {%d, %d, %d}\n", rank-1, cur_trace.time_usage, cur_trace.peak_memory_usage, cur_trace.fin_time_sum);
+			printf("Worker %d gets an answer of {%d, %d, %d, %d}\n", rank-1, cur_trace.time_usage, cur_trace.peak_memory_usage, cur_trace.sum_peak_memory_usage, cur_trace.fin_time_sum);
 			assert((int)cur_trace.trace.size() == num_traceitems);
 			// Handle the result back to the master
 			ds::Trace *cur_trace_ptr = (ds::Trace*)send_buf;
 			cur_trace_ptr->time_usage = cur_trace.time_usage;
 			cur_trace_ptr->peak_memory_usage = cur_trace.peak_memory_usage;
+			cur_trace_ptr->sum_peak_memory_usage = cur_trace.sum_peak_memory_usage;
 			cur_trace_ptr->fin_time_sum = cur_trace.fin_time_sum;
 			memcpy(send_buf+offsetof(ds::Trace, trace), cur_trace.trace.data(), sizeof(ds::TraceItem)*num_traceitems);
 			MPI_CHECK(MPI_Send(send_buf, trace_size, MPI_CHAR, 0, TAG_TRACE, MPI_COMM_WORLD));
