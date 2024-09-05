@@ -1,5 +1,6 @@
 #include "DualEgoSolver.h"
 
+#include <chrono>
 #include <cstring>
 #include <limits>
 
@@ -54,6 +55,10 @@ private:
 		for (int worker_rank = 1; worker_rank < world_size; ++worker_rank)
 			send_a_job_to_worker(worker_rank);
 
+		int finished_jobs = 0;
+		int tot_num_jobs = sim_anneal_configs.size();
+		std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
+
 		while (num_terminated_workers < world_size-1) {
 			// Receive a result from any worker
 			MPI_Status sender_status;
@@ -76,6 +81,18 @@ private:
 				best_trace = cur_trace;
 				best_trace.trace.resize(num_traceitems);
 				memcpy(best_trace.trace.data(), recv_buf+offsetof(ds::Trace, trace), sizeof(ds::TraceItem)*num_traceitems);
+			}
+
+			// Print the progress
+			finished_jobs += 1;
+			if (finished_jobs%20 == 0) {
+				std::chrono::steady_clock::time_point cur_time = std::chrono::steady_clock::now();
+				double elapsed_time = std::chrono::duration_cast<std::chrono::duration<double>>(cur_time-start_time).count();
+				printf("\033[33mProgress: %d/%d (%.2f%%), elapsed time: %.2fs, estimated time left: %.2fs. Current best: %s\033[0m\n",
+					finished_jobs, tot_num_jobs, 100.0*finished_jobs/tot_num_jobs,
+					elapsed_time,
+					elapsed_time/finished_jobs*(tot_num_jobs-finished_jobs),
+					ds::fmt_trace(best_trace).c_str());
 			}
 		}
 
@@ -103,7 +120,7 @@ private:
 			// Run it
 			DualEgoSolver solver(num_nodes, model_metas, cur_config);
 			ds::Trace cur_trace = solver.solve();
-			printf("Worker %d gets an answer of %d\n", rank-1, cur_trace.time_usage);
+			printf("Worker %d gets an answer of {%d, %d, %d}\n", rank-1, cur_trace.time_usage, cur_trace.peak_memory_usage, cur_trace.fin_time_sum);
 			assert((int)cur_trace.trace.size() == num_traceitems);
 			// Handle the result back to the master
 			ds::Trace *cur_trace_ptr = (ds::Trace*)send_buf;
