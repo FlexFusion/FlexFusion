@@ -48,10 +48,19 @@ public:
 		vector<TraceItem> trace;
 	};
 
+	struct TraceMetric {
+		int time_usage;
+		int peak_memory_usage;
+		float utilization;
+		float bubble_rate;	// bubble_rate + utilization = 1.0
+	};
+
 	// Define how simulated annealing is initialized
 	// TODO May add other initialization methods (like 1F1B) in the future
 	enum class sim_anneal_init_t {
-		FFFFBBBB
+		FFFFBBBB_0,
+		FFFFBBBB_1,
+		FFFFBBBB_OPTIM_3_MODELS
 	};
 
 	// Define how simulated annealing is disturbed
@@ -222,25 +231,53 @@ private:
 	}
 
 	// Get the initial task sched
-	TaskSched get_init_task_sched() {
+	TaskSched get_init_task_sched(sim_anneal_init_t init_method) {
 		TaskSched res;
 		res.tasks.resize(num_nodes);
-		// for (int node_id = 0; node_id < num_nodes; ++node_id)
-		// 	res.tasks[node_id].reserve(2*tot_num_mbatches);
-		if (sim_anneal_config.init_method == sim_anneal_init_t::FFFFBBBB) {
+		// Some helpers
+		auto push_fwd_stages = [&](int model_id) {
+			const ModelMeta& meta = model_metas[model_id];
+			for (int stage_id = 0; stage_id < (int)meta.stage2node.size(); ++stage_id)
+				for (int _ = 0; _ < meta.num_mbatches; ++_)
+					res.tasks[stage_to_node(model_id, stage_id)].push_back({model_id, true});
+		};
+		auto push_bwd_stages = [&](int model_id) {
+			const ModelMeta& meta = model_metas[model_id];
+			int num_stages = (int)meta.stage2node.size();
+			for (int stage_id = num_stages; stage_id < 2*num_stages; ++stage_id)
+				for (int _ = 0; _ < meta.num_mbatches; ++_)
+					res.tasks[stage_to_node(model_id, stage_id)].push_back({model_id, false});
+		};
+		if (init_method == sim_anneal_init_t::FFFFBBBB_0) {
 			for (int model_id = 0; model_id < num_models; ++model_id) {
-				const ModelMeta& meta = model_metas[model_id];
-				for (int stage_id = 0; stage_id < (int)meta.stage2node.size(); ++stage_id)
-					for (int _ = 0; _ < meta.num_mbatches; ++_)
-						res.tasks[stage_to_node(model_id, stage_id)].push_back({model_id, true});
+				push_fwd_stages(model_id);
 			}
 			for (int model_id = 0; model_id < num_models; ++model_id) {
-				const ModelMeta& meta = model_metas[model_id];
-				int num_stages = (int)meta.stage2node.size();
-				for (int stage_id = num_stages; stage_id < 2*num_stages; ++stage_id)
-					for (int _ = 0; _ < meta.num_mbatches; ++_)
-						res.tasks[stage_to_node(model_id, stage_id)].push_back({model_id, false});
+				push_bwd_stages(model_id);
 			}
+		} else if (init_method == sim_anneal_init_t::FFFFBBBB_1) {
+			for (int model_id = num_models-1; model_id >= 0; --model_id) {
+				push_fwd_stages(model_id);
+			}
+			for (int model_id = 0; model_id < num_models; ++model_id) {
+				push_bwd_stages(model_id);
+			}
+		} else if (init_method == sim_anneal_init_t::FFFFBBBB_OPTIM_3_MODELS) {
+			// Manually optimized for scenarios where there are one big model
+			// occupying all nodes, with 2 small models, each occupying a half
+			// of nodes
+			assert(num_models == 3);
+			assert((int)model_metas[0].stage2node.size() == num_nodes);
+			assert((int)model_metas[1].stage2node.size() == num_nodes/2);
+			assert((int)model_metas[2].stage2node.size() == num_nodes/2);
+			assert((int)model_metas[1].stage2node[0] == num_nodes/2-1);
+			assert((int)model_metas[2].stage2node[0] == num_nodes-1);
+			push_fwd_stages(2);
+			push_fwd_stages(0);
+			push_fwd_stages(1);
+			push_bwd_stages(1);
+			push_bwd_stages(0);
+			push_bwd_stages(2);
 		} else {
 			assert(0);
 		}
@@ -277,7 +314,7 @@ private:
 
 	// Run simulated annealing, and return a task_sched
 	TaskSched simulated_annealing() {
-		TaskSched cur_task_sched = get_init_task_sched();
+		TaskSched cur_task_sched = get_init_task_sched(sim_anneal_config.init_method);
 		TaskSched best_task_sched = cur_task_sched;
 		Trace best_trace = get_time_usage<false>(cur_task_sched);
 		Trace cur_trace = best_trace;
@@ -315,6 +352,63 @@ private:
 		return best_task_sched;
 	}
 
+	TraceMetric get_trace_metric(const Trace &trace) {
+		int effective_work_time = 0;
+		for (const ModelMeta &meta : model_metas) {
+			effective_work_time += meta.num_mbatches * (int)meta.stage2node.size() * (meta.fwd_time+meta.bwd_time);
+		}
+		int total_work_time = num_nodes * trace.time_usage;
+		float utilization = effective_work_time / (float)total_work_time;
+		TraceMetric result {
+			trace.time_usage,
+			trace.peak_memory_usage,
+			utilization,
+			1 - utilization
+		};
+		return result;
+	}
+
+	// Get the "theoretically best" metric
+	TraceMetric get_theoretical_best_metric() {
+		// min_e2e_time is the theoretically minimum e2e time usage. It must be
+		// - greater than the theoretically minimum e2e time for every model
+		// - greater than ceil(all_work/num_nodes)
+		int min_e2e_time = 0;
+		for (const ModelMeta &meta : model_metas) {
+			int cur_model_min_e2e_time = ((int)meta.stage2node.size() + meta.num_mbatches - 1) * (meta.fwd_time+meta.bwd_time);
+			min_e2e_time = std::max(min_e2e_time, cur_model_min_e2e_time);
+		}
+		int effective_work_time = 0;
+		for (const ModelMeta &meta : model_metas) {
+			effective_work_time += meta.num_mbatches * (int)meta.stage2node.size() * (meta.fwd_time+meta.bwd_time);
+		}
+		min_e2e_time = std::max(min_e2e_time, (effective_work_time+num_nodes-1) / num_nodes);
+
+		// min_peak_memory is the theoretically minimum peak memory usage. It must be
+		// - greater than the theoretically minimum peak memory usage for every model (assume 1F1B)
+		int min_peak_memory = 0;
+		for(const ModelMeta &meta : model_metas) {
+			min_peak_memory = std::max(min_peak_memory, (int)meta.stage2node.size() * meta.mem_pressure);
+		}
+			
+		int total_work_time = num_nodes * min_e2e_time;
+		float utilization = effective_work_time / (float)total_work_time;
+		TraceMetric result {
+			min_e2e_time,
+			min_peak_memory,
+			utilization,
+			1 - utilization
+		};
+		return result;
+	}
+
+	void print_trace_metric(const TraceMetric &metric) {
+		printf("E2E time usage: %d\n", metric.time_usage);
+		printf("Peak memory usage: %d\n", metric.peak_memory_usage);
+		printf("Utilization: %.2f%%\n", metric.utilization*100);
+		printf("Bubble rate: %.2f%%\n", metric.bubble_rate*100);
+	}
+
 public:
 	DualEgoSolver(int num_stages, vector<ModelMeta> const& model_metas, SimAnnealConfig const& sim_anneal_config):
 		num_nodes(num_stages), num_models(model_metas.size()), model_metas(model_metas), sim_anneal_config(sim_anneal_config) {
@@ -330,6 +424,9 @@ public:
 	}
 
 	Trace solve() {
+		// TaskSched t = get_init_task_sched(sim_anneal_init_t::FFFFBBBB_OPTIM_3_MODELS);
+		// Trace tt = get_time_usage<true>(t);
+		// print_trace(tt);
 		TaskSched best_sched = simulated_annealing();
 		Trace result = get_time_usage<true>(best_sched);
 		return result;
@@ -363,8 +460,6 @@ public:
 			}
 		}
 
-		printf("E2E time usage: %d\n", trace.time_usage);
-		printf("Peak memory pressure: %d\n", trace.peak_memory_usage);
 		for (int i = 0; i < num_nodes; ++i) {
 			for (int t = 0; t < trace.time_usage; ++t) {
 				if (jobs[i][t].is_occupied) {
@@ -376,5 +471,14 @@ public:
 			}
 			printf("\n");
 		}
+
+		printf("Theoretically best:\n");
+		TraceMetric metric_theoretical = get_theoretical_best_metric();
+		print_trace_metric(metric_theoretical);
+		printf("\n");
+
+		printf("Ours:\n");
+		TraceMetric metric_ours = get_trace_metric(trace);
+		print_trace_metric(metric_ours);
 	}
 };
