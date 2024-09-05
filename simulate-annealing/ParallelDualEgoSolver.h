@@ -62,15 +62,13 @@ private:
 			// Send the worker a new job, or inform that there is no remaining jobs
 			send_a_job_to_worker(sender_status.MPI_SOURCE);
 
-			// Save the trace if necessary
-			ds::Trace cur_trace;
-			cur_trace.time_usage = *((int*)recv_buf);
-			cur_trace.trace.resize(num_traceitems);
-			memcpy(cur_trace.trace.data(), recv_buf+sizeof(ds::Trace::time_usage), sizeof(ds::TraceItem)*num_traceitems);
-
-			if (cur_trace.time_usage < best_trace.time_usage) {
-				printf("\033[32mWorker %d made a breakthrough! The best answer is updated to %d!\033[0m\n", sender_status.MPI_SOURCE-1, cur_trace.time_usage);
-				best_trace = cur_trace;
+			int cur_time_usage = *((int*)recv_buf);
+			if (cur_time_usage < best_trace.time_usage) {
+				// Save the trace
+				printf("\033[32mWorker %d made a breakthrough! The best answer is updated to %d!\033[0m\n", sender_status.MPI_SOURCE-1, cur_time_usage);
+				best_trace.time_usage = cur_time_usage;
+				best_trace.trace.resize(num_traceitems);
+				memcpy(best_trace.trace.data(), recv_buf+sizeof(ds::Trace::time_usage), sizeof(ds::TraceItem)*num_traceitems);
 			}
 		}
 
