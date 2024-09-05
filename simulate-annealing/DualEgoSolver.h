@@ -19,6 +19,8 @@ public:
 		// The mapping from stages to node_id
 		// Should only contain FWD stages
 		vector<int> stage2node;
+		// The memory pressure of a mbatch that is forwarded but not backwarded on a node
+		int mem_pressure;
 		// Colors used when print the trace
 		string fwd_color_code, bwd_color_code;
 	};
@@ -34,7 +36,15 @@ public:
 
 	// The trace, represents the final solution found by the solver
 	struct Trace {
+		// The end2end time usage
 		int time_usage;
+		// The peak memory usage, defined as the maximum of 
+		// \sum(model) model.mem_pressure * (num_fwded_mbatch on node i at time t - num_bwded_mbatch on node i at time t)
+		// over all i and t
+		int peak_memory_usage;
+		// The summation of time usage of every stage of every mbatch
+		int fin_time_sum;
+		// The trace
 		vector<TraceItem> trace;
 	};
 
@@ -67,6 +77,24 @@ public:
 		sim_anneal_disturb_t disturb_method;
 	};
 
+	static inline bool is_trace_more_optimal(const Trace& trace_a, const Trace& trace_b) {
+		return trace_a.time_usage != trace_b.time_usage ?
+				trace_a.time_usage < trace_b.time_usage :
+				(trace_a.peak_memory_usage != trace_b.peak_memory_usage ?
+				trace_a.peak_memory_usage < trace_b.peak_memory_usage :
+				trace_a.fin_time_sum < trace_b.fin_time_sum);
+	}
+	
+	static inline string fmt_trace(const Trace& trace) {
+		return "{" + std::to_string(trace.time_usage) + ", " + std::to_string(trace.peak_memory_usage) + ", " + std::to_string(trace.fin_time_sum) + "}";
+	}
+
+	static inline string fmt_sim_anneal_config(const SimAnnealConfig &config) {
+		static char buf[1024];
+		snprintf(buf, 1024, "{%e, %f, %e, %d, %d, %d}", config.init_temp, config.cooling_rate, config.stop_temp, config.seed, (int)config.init_method, (int)config.disturb_method);
+		return std::string(buf);
+	}
+
 private:
 	int num_nodes;
 	int num_models;
@@ -82,6 +110,10 @@ private:
 		int model_id;
 		bool is_fwd;
 	};
+
+	friend inline bool operator==(const Task &a, const Task &b) {
+		return a.model_id == b.model_id && a.is_fwd == b.is_fwd;
+	}
 
 	// The overall schedule (one acceptable but not necessarily optimal solution)
 	struct TaskSched {
@@ -100,7 +132,7 @@ private:
 	// If the schedule is invalid, return -1
 	// Save the trace if SAVE_TRACE is true
 	template<bool SAVE_TRACE>
-	pair<int, int> get_time_usage(TaskSched const& task_sched, vector<TraceItem> &trace) {
+	Trace get_time_usage(TaskSched const& task_sched) {
 		// The ending time for the last stage of a microbatch of a model
 		int last_stage_end_time[num_models][max_num_mbatches];
 		// The next idle time for a node
@@ -112,12 +144,16 @@ private:
 		int num_fwded_mbatches[num_nodes][num_models], num_bwded_mbatches[num_nodes][num_models];
 		// The index of the next stage for a micro batch of one model
 		int mbatch_next_stage[num_models][max_num_mbatches];
+		// Memory pressure on a node
+		int mem_pressure[num_nodes];
 		memset(node_idle_time, 0, sizeof(node_idle_time));
 		memset(next_task_index, 0, sizeof(next_task_index));
 		memset(num_fwded_mbatches, 0, sizeof(num_fwded_mbatches));
 		memset(num_bwded_mbatches, 0, sizeof(num_bwded_mbatches));
 		memset(mbatch_next_stage, 0, sizeof(mbatch_next_stage));
-		int summed_time_usage = 0;	// The sum of time usage of all tasks. = avg_time_usage * num_tasks
+		memset(mem_pressure, 0, sizeof(mem_pressure));
+		
+		Trace result = {0, 0, 0, {}};
 
 		int node_id = num_nodes-1;
 		for (int i = 0; i < 2*tot_num_mbatches_times_stages; ++i) {
@@ -139,7 +175,7 @@ private:
 					continue;
 				}
 				if (!is_fwd && num_bwded_mbatches[node_id][model_id] == num_fwded_mbatches[node_id][model_id]) {
-					return {-1, -1};
+					return {-1};
 				}
 				
 				const ModelMeta& model_meta = model_metas[model_id];
@@ -151,40 +187,38 @@ private:
 				int cur_task_fin_time = cur_task_start_time + task_duration;
 
 				// Update the state
-				summed_time_usage += cur_task_fin_time;
 				last_stage_end_time[model_id][mbatch_id] = cur_task_fin_time;
 				node_idle_time[node_id] = cur_task_fin_time;
 				next_task_index[node_id]++;
 				if (is_fwd) {
 					num_fwded_mbatches[node_id][model_id]++;
+					mem_pressure[node_id] += model_meta.mem_pressure;
 				} else {
 					num_bwded_mbatches[node_id][model_id]++;
+					mem_pressure[node_id] -= model_meta.mem_pressure;
 				}
 				mbatch_next_stage[model_id][mbatch_id]++;
 
+				// Update statistics
+				result.fin_time_sum += cur_task_fin_time;
+				result.peak_memory_usage = std::max(result.peak_memory_usage, mem_pressure[node_id]);
+
 				if constexpr(SAVE_TRACE) {
-					trace.push_back({cur_task_start_time, task_duration, model_id, mbatch_id, stage_id});
+					result.trace.push_back({cur_task_start_time, task_duration, model_id, mbatch_id, stage_id});
 				}
 				task_found = true;
 				break;
 			}
 			// assert(task_found);
 			if (!task_found) {
-				return {-1, -1};
+				return {-1};
 			}
 		}
 
-		int max_time_usage = 0;
 		for (int node_id = 0; node_id < num_nodes; ++node_id) {
-			max_time_usage = std::max(max_time_usage, node_idle_time[node_id]);
+			result.time_usage = std::max(result.time_usage, node_idle_time[node_id]);
 		}
-		return {max_time_usage, summed_time_usage};
-	}
-
-	// A shorthand for get_time_usage with SAVE_TRACE is false
-	pair<int, int> get_time_usage(TaskSched const& task_sched) {
-		static vector<TraceItem> temp_trace;
-		return get_time_usage<false>(task_sched, temp_trace);
+		return result;
 	}
 
 	// Get the initial task sched
@@ -215,17 +249,29 @@ private:
 
 	// Disturb
 	void disturb(std::mt19937 &rng, TaskSched &new_task_sched) {
-		if (sim_anneal_config.disturb_method == sim_anneal_disturb_t::RANDOM_SWAP) {
-			int node_id = rng() % num_nodes;
-			int taskA_id = rng() % new_task_sched.tasks[node_id].size();
-			int taskB_id = rng() % new_task_sched.tasks[node_id].size();
-			std::swap(new_task_sched.tasks[node_id][taskA_id], new_task_sched.tasks[node_id][taskB_id]);
-		} else if (sim_anneal_config.disturb_method == sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP) {
-			int node_id = rng() % num_nodes;
-			int taskA_id = rng() % ((int)new_task_sched.tasks[node_id].size()-1);
-			std::swap(new_task_sched.tasks[node_id][taskA_id], new_task_sched.tasks[node_id][taskA_id+1]);
-		} else {
-			assert(0);
+		while (true) {
+			if (sim_anneal_config.disturb_method == sim_anneal_disturb_t::RANDOM_SWAP) {
+				int node_id = rng() % num_nodes;
+				int taskA_id = rng() % new_task_sched.tasks[node_id].size();
+				int taskB_id = rng() % new_task_sched.tasks[node_id].size();
+				if (new_task_sched.tasks[node_id][taskA_id] == new_task_sched.tasks[node_id][taskB_id]) {
+					continue;
+				} else {
+					std::swap(new_task_sched.tasks[node_id][taskA_id], new_task_sched.tasks[node_id][taskB_id]);
+					break;
+				}
+			} else if (sim_anneal_config.disturb_method == sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP) {
+				int node_id = rng() % num_nodes;
+				int taskA_id = rng() % ((int)new_task_sched.tasks[node_id].size()-1);
+				if (new_task_sched.tasks[node_id][taskA_id] == new_task_sched.tasks[node_id][taskA_id+1]) {
+					continue;
+				} else {
+					std::swap(new_task_sched.tasks[node_id][taskA_id], new_task_sched.tasks[node_id][taskA_id+1]);
+					break;
+				}
+			} else {
+				assert(0);
+			}
 		}
 	}
 
@@ -233,9 +279,9 @@ private:
 	TaskSched simulated_annealing() {
 		TaskSched cur_task_sched = get_init_task_sched();
 		TaskSched best_task_sched = cur_task_sched;
-		pair<int, int> best_time_usage = get_time_usage(cur_task_sched);
-		pair<int, int> cur_time_usage = best_time_usage;
-		assert(best_time_usage.first != -1);
+		Trace best_trace = get_time_usage<false>(cur_task_sched);
+		Trace cur_trace = best_trace;
+		assert(best_trace.time_usage != -1);
 		
 		double temperature = sim_anneal_config.init_temp;
 		double cooling_rate = sim_anneal_config.cooling_rate;
@@ -243,13 +289,13 @@ private:
 		while (temperature > sim_anneal_config.stop_temp) {
 			TaskSched new_task_sched = cur_task_sched;
 			disturb(rng, new_task_sched);
-			pair<int, int> new_time_usage = get_time_usage(new_task_sched);
+			Trace new_trace = get_time_usage<false>(new_task_sched);
 			bool is_accept = false;
-			if (new_time_usage.first != -1) {
-				if (new_time_usage < cur_time_usage) {
+			if (new_trace.time_usage != -1) {
+				if (is_trace_more_optimal(new_trace, cur_trace)) {
 					is_accept = true;
 				} else {
-					double prob = std::exp((cur_time_usage.first - new_time_usage.first) / temperature);
+					double prob = std::exp((cur_trace.time_usage - new_trace.time_usage) / temperature);
 					double rnd = std::generate_canonical<double, 10>(rng);
 					if (rnd < prob) {
 						is_accept = true;
@@ -258,10 +304,10 @@ private:
 			}
 			if (is_accept) {
 				cur_task_sched = new_task_sched;
-				cur_time_usage = new_time_usage;
-				if (cur_time_usage < best_time_usage) {
-					best_time_usage = cur_time_usage;
+				cur_trace = new_trace;
+				if (is_trace_more_optimal(cur_trace, best_trace)) {
 					best_task_sched = cur_task_sched;
+					best_trace = cur_trace;
 				}
 			}
 			temperature *= cooling_rate;
@@ -285,12 +331,8 @@ public:
 
 	Trace solve() {
 		TaskSched best_sched = simulated_annealing();
-		vector<TraceItem> trace;
-		int time_usage = get_time_usage<true>(best_sched, trace).first;
-		return {
-			time_usage,
-			trace
-		};
+		Trace result = get_time_usage<true>(best_sched);
+		return result;
 	}
 
 	void print_trace(Trace const& trace) {
@@ -321,6 +363,8 @@ public:
 			}
 		}
 
+		printf("E2E time usage: %d\n", trace.time_usage);
+		printf("Peak memory pressure: %d\n", trace.peak_memory_usage);
 		for (int i = 0; i < num_nodes; ++i) {
 			for (int t = 0; t < trace.time_usage; ++t) {
 				if (jobs[i][t].is_occupied) {

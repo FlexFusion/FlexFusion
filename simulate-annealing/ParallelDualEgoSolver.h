@@ -30,7 +30,7 @@ private:
 	int num_traceitems;
 
 	ds::Trace run_master_routine() {
-		size_t trace_size = sizeof(ds::Trace::time_usage) + sizeof(ds::TraceItem)*num_traceitems;
+		size_t trace_size = offsetof(ds::Trace, trace) + sizeof(ds::TraceItem)*num_traceitems;
 		char* recv_buf = new char[trace_size];
 
 		ds::Trace best_trace;
@@ -62,13 +62,20 @@ private:
 			// Send the worker a new job, or inform that there is no remaining jobs
 			send_a_job_to_worker(sender_status.MPI_SOURCE);
 
-			int cur_time_usage = *((int*)recv_buf);
-			if (cur_time_usage < best_trace.time_usage) {
+			// Forge the "cur_trace" which contains every field other than "trace"
+			ds::Trace *cur_trace_ptr = (ds::Trace*)recv_buf;
+			ds::Trace cur_trace = {
+				cur_trace_ptr->time_usage,
+				cur_trace_ptr->peak_memory_usage,
+				cur_trace_ptr->fin_time_sum,
+				{}
+			};
+			if (ds::is_trace_more_optimal(cur_trace, best_trace)) {
 				// Save the trace
-				printf("\033[32mWorker %d made a breakthrough! The best answer is updated to %d!\033[0m\n", sender_status.MPI_SOURCE-1, cur_time_usage);
-				best_trace.time_usage = cur_time_usage;
+				printf("\033[32mWorker %d made a breakthrough! The best answer is updated to %s!\033[0m\n", sender_status.MPI_SOURCE-1, ds::fmt_trace(cur_trace).c_str());
+				best_trace = cur_trace;
 				best_trace.trace.resize(num_traceitems);
-				memcpy(best_trace.trace.data(), recv_buf+sizeof(ds::Trace::time_usage), sizeof(ds::TraceItem)*num_traceitems);
+				memcpy(best_trace.trace.data(), recv_buf+offsetof(ds::Trace, trace), sizeof(ds::TraceItem)*num_traceitems);
 			}
 		}
 
@@ -78,7 +85,7 @@ private:
 	}
 
 	void run_worker_routine() {
-		size_t trace_size = sizeof(ds::Trace::time_usage) + sizeof(ds::TraceItem)*num_traceitems;
+		size_t trace_size = offsetof(ds::Trace, trace) + sizeof(ds::TraceItem)*num_traceitems;
 		char* send_buf = new char[trace_size];
 		MPI_Status status;
 
@@ -92,15 +99,18 @@ private:
 			// Get the job detail
 			ds::SimAnnealConfig cur_config;
 			MPI_CHECK(MPI_Recv(&cur_config, sizeof(ds::SimAnnealConfig), MPI_CHAR, 0, TAG_JOB_CONFIG, MPI_COMM_WORLD, &status));
-			printf("Worker %d received job with seed %d\n", rank-1, cur_config.seed);
+			printf("Worker %d received job with config %s\n", rank-1, ds::fmt_sim_anneal_config(cur_config).c_str());
 			// Run it
 			DualEgoSolver solver(num_nodes, model_metas, cur_config);
 			ds::Trace cur_trace = solver.solve();
 			printf("Worker %d gets an answer of %d\n", rank-1, cur_trace.time_usage);
 			assert((int)cur_trace.trace.size() == num_traceitems);
 			// Handle the result back to the master
-			*((int*)send_buf) = cur_trace.time_usage;
-			memcpy(send_buf+sizeof(ds::Trace::time_usage), cur_trace.trace.data(), sizeof(ds::TraceItem)*num_traceitems);
+			ds::Trace *cur_trace_ptr = (ds::Trace*)send_buf;
+			cur_trace_ptr->time_usage = cur_trace.time_usage;
+			cur_trace_ptr->peak_memory_usage = cur_trace.peak_memory_usage;
+			cur_trace_ptr->fin_time_sum = cur_trace.fin_time_sum;
+			memcpy(send_buf+offsetof(ds::Trace, trace), cur_trace.trace.data(), sizeof(ds::TraceItem)*num_traceitems);
 			MPI_CHECK(MPI_Send(send_buf, trace_size, MPI_CHAR, 0, TAG_TRACE, MPI_COMM_WORLD));
 		}
 
