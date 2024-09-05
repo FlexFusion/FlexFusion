@@ -2,9 +2,10 @@
 #include "mpi.h"
 
 int main(int argc, char* argv[]) {
+	using ds = DualEgoSolver;
 
 	// The large model
-	vector<DualEgoSolver::ModelMeta> model_metas;
+	vector<ds::ModelMeta> model_metas;
 	int num_nodes = 16;
 	model_metas.push_back({
 		32,							// #micro-batches
@@ -28,29 +29,31 @@ int main(int argc, char* argv[]) {
 		"\033[35m", "\033[36m"
 	});
 
-	vector<DualEgoSolver::SimAnnealConfig> sim_anneal_configs;
+	vector<ds::SimAnnealConfig> sim_anneal_configs;
 	for (int seed = 0; seed < 768; ++seed) {
-		DualEgoSolver::SimAnnealConfig sim_anneal_config = {
-			1e6,
-			0.99999,
-			1e-8,
-			seed,
-			DualEgoSolver::sim_anneal_init_t::FFFFBBBB,
-			DualEgoSolver::sim_anneal_disturb_t::RANDOM_SWAP
-		};
-		sim_anneal_configs.push_back(sim_anneal_config);
+		for (ds::sim_anneal_disturb_t disturb_method : vector<ds::sim_anneal_disturb_t>{ds::sim_anneal_disturb_t::RANDOM_SWAP, ds::sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP}) {
+			ds::SimAnnealConfig sim_anneal_config = {
+				1e6,
+				0.99999,
+				1e-8,
+				seed,
+				ds::sim_anneal_init_t::FFFFBBBB,
+				disturb_method
+			};
+			sim_anneal_configs.push_back(sim_anneal_config);
+		}
 	}
 
 	MPI_CHECK(MPI_Init(&argc, &argv));
 	ParallelDualEgoSolver parallel_solver(num_nodes, model_metas, sim_anneal_configs);
-	DualEgoSolver::Trace best_trace = parallel_solver.solve();
+	ds::Trace best_trace = parallel_solver.solve();
 
 	int rank;
 	MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
 	if (rank == 0) {
 		printf("Best time usage: %d\n", best_trace.time_usage);
 		// Trace printing do not care about the sim_anneal_config, so just feed with a random one
-		DualEgoSolver trace_printer(num_nodes, model_metas, sim_anneal_configs[0]);
+		ds trace_printer(num_nodes, model_metas, sim_anneal_configs[0]);
 		trace_printer.print_trace(best_trace);
 	}
 

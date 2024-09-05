@@ -47,7 +47,8 @@ public:
 	// Define how simulated annealing is disturbed
 	// TODO May add other disturbing methods in the future
 	enum class sim_anneal_disturb_t {
-		RANDOM_SWAP
+		RANDOM_SWAP,
+		RANDOM_ADJACENT_SWAP
 	};
 
 	// Configuration for simulated annealing
@@ -219,6 +220,12 @@ private:
 			int taskA_id = rng() % new_task_sched.tasks[node_id].size();
 			int taskB_id = rng() % new_task_sched.tasks[node_id].size();
 			std::swap(new_task_sched.tasks[node_id][taskA_id], new_task_sched.tasks[node_id][taskB_id]);
+		} else if (sim_anneal_config.disturb_method == sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP) {
+			int node_id = rng() % num_nodes;
+			int taskA_id = rng() % ((int)new_task_sched.tasks[node_id].size()-1);
+			std::swap(new_task_sched.tasks[node_id][taskA_id], new_task_sched.tasks[node_id][taskA_id+1]);
+		} else {
+			assert(0);
 		}
 	}
 
