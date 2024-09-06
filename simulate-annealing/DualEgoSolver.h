@@ -74,7 +74,8 @@ public:
 		FFFFBBBB_0,
 		FFFFBBBB_1,
 		FFFFBBBB_OPTIM_3_MODELS,
-		ONE_F_ONE_B
+		ONE_F_ONE_B,
+		GREEDY
 	};
 
 	// Define how simulated annealing is disturbed
@@ -326,6 +327,8 @@ private:
 						res.tasks[node_id].push_back({model_id, false});
 				}
 			}
+		} else if (init_method == sim_anneal_init_t::GREEDY) {
+			return greedy();
 		} else {
 			assert(0);
 		}
