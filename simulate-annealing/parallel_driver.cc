@@ -32,28 +32,21 @@ int main(int argc, char* argv[]) {
 		"\033[33m", "\033[34m"
 	});
 
-	vector<ds::sim_anneal_init_t> candidte_init_methods = {
-		ds::sim_anneal_init_t::FFFFBBBB_0,
-		ds::sim_anneal_init_t::FFFFBBBB_1,
-		ds::sim_anneal_init_t::FFFFBBBB_OPTIM_3_MODELS,
-	};
 	vector<ds::SimAnnealConfig> sim_anneal_configs;
-	for (int seed = 0; seed < (256-1)*4; ++seed) {
-		for (ds::sim_anneal_init_t init_method : candidte_init_methods) {
-			ds::SimAnnealConfig sim_anneal_config = {
-				4,
-				0.999995,
-				1e-16,
-				DualEgoSolver::sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP,
-				4,
-				0.999995,
-				1e-16,
-				DualEgoSolver::sim_anneal_disturb_t::RANDOM_MOVE,
-				seed,
-				init_method
-			};
-			sim_anneal_configs.push_back(sim_anneal_config);
-		}
+	for (int seed = 0; seed < 8192; ++seed) {
+		DualEgoSolver::SimAnnealConfig sim_anneal_config = {
+			0,
+			0.999995,
+			0,
+			DualEgoSolver::sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP,
+			10,
+			0.999995,
+			1e-16,
+			DualEgoSolver::sim_anneal_disturb_t::RANDOM_MOVE,
+			seed,
+			DualEgoSolver::sim_anneal_init_t::GREEDY,
+		};
+		sim_anneal_configs.push_back(sim_anneal_config);
 	}
 
 	MPI_CHECK(MPI_Init(&argc, &argv));
