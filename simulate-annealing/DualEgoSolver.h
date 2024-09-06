@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -5,6 +6,17 @@
 #include <random>
 #include <vector>
 using std::vector, std::string, std::pair;
+
+template<typename T, typename F>
+static inline std::vector<T> filter(const std::vector<T> &vec, F pred) {
+	std::vector<T> res;
+	for (const T &item : vec) {
+		if (pred(item)) {
+			res.push_back(item);
+		}
+	}
+	return res;
+}
 
 class DualEgoSolver {
 public:
@@ -489,6 +501,108 @@ private:
 		printf("Bubble rate: %.2f%%\n", metric.bubble_rate*100);
 	}
 
+	TaskSched greedy() {
+		TaskSched res;
+		res.tasks.resize(num_nodes);
+
+		int last_stage_end_time[num_models][max_num_mbatches];
+		int node_idle_time[num_nodes];
+		int num_fwded_mbatches[num_nodes][num_models], num_bwded_mbatches[num_nodes][num_models];
+		int mbatch_next_stage[num_models][max_num_mbatches];
+		memset(last_stage_end_time, 0, sizeof(last_stage_end_time));
+		memset(node_idle_time, 0, sizeof(node_idle_time));
+		memset(num_fwded_mbatches, 0, sizeof(num_fwded_mbatches));
+		memset(num_bwded_mbatches, 0, sizeof(num_bwded_mbatches));
+		memset(mbatch_next_stage, 0, sizeof(mbatch_next_stage));
+
+		for (int i = 0; i < 2*tot_num_mbatches_times_stages; ++i) {
+			struct Candidate {
+				int node_id;
+				int model_id;
+				int mbatch_id;
+				int stage_id;
+				bool is_fwd;
+				int start_time;
+				int fin_time;
+			};
+			vector<Candidate> candidates;
+
+			// Find all candidates (schedulable jobs)
+			for (int node_id = 0; node_id < num_nodes; ++node_id) {
+				for (int model_id = 0; model_id < num_models; ++model_id) {
+					const ModelMeta &meta = model_metas[model_id];
+					for (bool is_fwd : vector<bool>{true, false}) {
+						int mbatch_id = is_fwd ? num_fwded_mbatches[node_id][model_id] : num_bwded_mbatches[node_id][model_id];
+						if (mbatch_id >= meta.num_mbatches) {
+							continue;
+						}
+						int stage_id = mbatch_next_stage[model_id][mbatch_id];
+						if (stage_id == 2*(int)meta.stage2node.size()) {
+							continue;
+						}
+						if (stage_to_node(model_id, stage_id) != node_id) {
+							continue;
+						}
+						if (!is_fwd && num_bwded_mbatches[node_id][model_id] == num_fwded_mbatches[node_id][model_id]) {
+							continue;
+						}
+
+						const ModelMeta &meta = model_metas[model_id];
+						int task_duration = is_fwd ? meta.fwd_time : meta.bwd_time;
+
+						int mbatch_prev_task_end_time = stage_id == 0 ? 0 : last_stage_end_time[model_id][mbatch_id];
+						int cur_node_next_idle_time = node_idle_time[node_id];
+						int cur_task_start_time = std::max(mbatch_prev_task_end_time, cur_node_next_idle_time);
+						int cur_task_fin_time = cur_task_start_time + task_duration;
+
+						candidates.push_back({node_id, model_id, mbatch_id, stage_id, is_fwd, cur_task_start_time, cur_task_fin_time});
+					}
+				}
+			}
+			
+			// Select the best candidate according to our greedy strategy
+			// Filter out candidates that overlaps with large models
+			assert(!candidates.empty());
+			int large_model_earlist_start_time[num_nodes];
+			for (int i = 0; i < num_nodes; ++i) {
+				large_model_earlist_start_time[i] = 1e9;
+			}
+			for (const Candidate &cand : candidates) {
+				if (cand.model_id == 0) {
+					large_model_earlist_start_time[cand.node_id] = std::min(large_model_earlist_start_time[cand.node_id], cand.start_time);
+				}
+			}
+			candidates = filter(candidates, [&](const Candidate &cand) {
+				if (cand.model_id == 0) {
+					return true;
+				} else {
+					return cand.fin_time <= large_model_earlist_start_time[cand.node_id];
+				}
+			});
+			// Select the task with the smallest start time
+			assert(!candidates.empty());
+			std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
+				return a.start_time != b.start_time ? 
+						a.start_time < b.start_time :
+						a.is_fwd < b.is_fwd;
+			});
+			const Candidate &selected_cand = candidates[0];
+
+			// Update statistics
+			res.tasks[selected_cand.node_id].push_back({selected_cand.model_id, selected_cand.is_fwd});
+			last_stage_end_time[selected_cand.model_id][selected_cand.mbatch_id] = selected_cand.fin_time;
+			node_idle_time[selected_cand.node_id] = selected_cand.fin_time;
+			if (selected_cand.is_fwd) {
+				num_fwded_mbatches[selected_cand.node_id][selected_cand.model_id]++;
+			} else {
+				num_bwded_mbatches[selected_cand.node_id][selected_cand.model_id]++;
+			}
+			mbatch_next_stage[selected_cand.model_id][selected_cand.mbatch_id]++;
+		}
+
+		return res;
+	}
+
 public:
 	DualEgoSolver(int num_stages, vector<ModelMeta> const& model_metas, SimAnnealConfig const& sim_anneal_config):
 		num_nodes(num_stages), num_models(model_metas.size()), model_metas(model_metas), sim_anneal_config(sim_anneal_config) {
@@ -509,6 +623,12 @@ public:
 		// print_trace(tt);
 		TaskSched best_sched = simulated_annealing();
 		Trace result = get_time_usage<true>(best_sched);
+		return result;
+	}
+
+	Trace solve_greedy() {
+		TaskSched sched = greedy();
+		Trace result = get_time_usage<true>(sched);
 		return result;
 	}
 
@@ -555,6 +675,12 @@ public:
 		printf("Theoretically best:\n");
 		TraceMetric metric_theoretical = get_theoretical_best_metric();
 		print_trace_metric(metric_theoretical);
+		printf("\n");
+
+		printf("Greedy:\n");
+		Trace sched_greedy = solve_greedy();
+		TraceMetric metric_greedy = get_trace_metric(sched_greedy);
+		print_trace_metric(metric_greedy);
 		printf("\n");
 
 		printf("Ours:\n");
