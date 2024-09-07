@@ -44,6 +44,8 @@ private:
 		int next_config_index = 0;
 		int num_terminated_workers = 0;
 
+		bool requested_jobs_before[world_size];
+		memset(requested_jobs_before, 0, sizeof(requested_jobs_before));
 		int finished_jobs = 0;
 		int tot_num_jobs = sim_anneal_e2e_configs.size();
 		std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
@@ -74,18 +76,6 @@ private:
 					best_trace.trace.resize(num_traceitems);
 					memcpy(best_trace.trace.data(), recv_buf+offsetof(ds::Trace, trace), sizeof(ds::TraceItem)*num_traceitems);
 				}
-
-				// Print the progress
-				finished_jobs += 1;
-				if (finished_jobs%20 == 0) {
-					std::chrono::steady_clock::time_point cur_time = std::chrono::steady_clock::now();
-					double elapsed_time = std::chrono::duration_cast<std::chrono::duration<double>>(cur_time-start_time).count();
-					printf("\033[33mProgress: %d/%d (%.2f%%), elapsed time: %.2fs, estimated time left: %.2fs. Current best: %s\033[0m\n",
-						finished_jobs, tot_num_jobs, 100.0*finished_jobs/tot_num_jobs,
-						elapsed_time,
-						elapsed_time/finished_jobs*(tot_num_jobs-finished_jobs),
-						ds::fmt_trace(best_trace).c_str());
-				}
 			} else if (message_id == TAG_REQUEST_BEST_TIME_USAGE) {
 				// A worker wants to know the best time usage
 				int cur_best_time_usage = best_trace.time_usage;
@@ -102,6 +92,20 @@ private:
 				} else {
 					num_terminated_workers += 1;
 				}
+				if (requested_jobs_before[worker_rank]) {
+					// Print the progress
+					finished_jobs += 1;
+					if (finished_jobs%20 == 0) {
+						std::chrono::steady_clock::time_point cur_time = std::chrono::steady_clock::now();
+						double elapsed_time = std::chrono::duration_cast<std::chrono::duration<double>>(cur_time-start_time).count();
+						printf("\033[33mProgress: %d/%d (%.2f%%), elapsed time: %.2fs, estimated time left: %.2fs. Current best: %s\033[0m\n",
+							finished_jobs, tot_num_jobs, 100.0*finished_jobs/tot_num_jobs,
+							elapsed_time,
+							elapsed_time/finished_jobs*(tot_num_jobs-finished_jobs),
+							ds::fmt_trace(best_trace).c_str());
+					}
+				}
+				requested_jobs_before[worker_rank] = true;
 			} else {
 				// Unknown message
 				printf("Unknown message with tag %d\n", sender_status.MPI_TAG);
