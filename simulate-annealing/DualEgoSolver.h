@@ -361,9 +361,6 @@ private:
 				int node_id = rng() % num_nodes;
 				int taskA_id = rng() % new_task_sched.tasks[node_id].size();
 				int taskB_id = rng() % new_task_sched.tasks[node_id].size();
-				if (new_task_sched.tasks[node_id][taskA_id] == new_task_sched.tasks[node_id][taskB_id]) {
-					continue;
-				}
 				Task task = new_task_sched.tasks[node_id][taskA_id];
 				new_task_sched.tasks[node_id].erase(new_task_sched.tasks[node_id].begin() + taskA_id);
 				new_task_sched.tasks[node_id].insert(new_task_sched.tasks[node_id].begin() + taskB_id, task);
