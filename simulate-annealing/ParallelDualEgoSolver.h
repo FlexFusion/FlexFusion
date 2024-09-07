@@ -194,7 +194,7 @@ private:
 				ds::TaskSched memory_optimized_tasksched = solver.optimize_peak_memory(cur_optim_config, cur_tasksched);
 				submit_task_sched(solver, memory_optimized_tasksched);
 				ds::Trace cur_trace = solver.task_sched2trace(memory_optimized_tasksched);
-				printf("Worker %d gets an answer of {%d, %d, %d, %d}\n", rank-1, cur_trace.time_usage, cur_trace.peak_memory_usage, cur_trace.sum_peak_memory_usage, cur_trace.fin_time_sum);
+				printf("Worker %d gets an answer of %s\n", rank-1, ds::fmt_trace(cur_trace).c_str());
 			}
 			
 			

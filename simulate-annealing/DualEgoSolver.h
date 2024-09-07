@@ -32,7 +32,7 @@ public:
 		// Should only contain FWD stages
 		vector<int> stage2node;
 		// The memory pressure of a mbatch that is forwarded but not backwarded on a node
-		int mem_pressure;
+		float mem_pressure;
 		// Colors used when print the trace
 		string fwd_color_code, bwd_color_code;
 	};
@@ -53,8 +53,8 @@ public:
 		// The peak memory usage, defined as the maximum of 
 		// \sum(model) model.mem_pressure * (num_fwded_mbatch on node i at time t - num_bwded_mbatch on node i at time t)
 		// over all i and t
-		int peak_memory_usage;
-		int sum_peak_memory_usage;
+		float peak_memory_usage;
+		float sum_peak_memory_usage;
 		// The summation of time usage of every stage of every mbatch
 		int fin_time_sum;
 		// The trace
@@ -63,7 +63,7 @@ public:
 
 	struct TraceMetric {
 		int time_usage;
-		int peak_memory_usage;
+		float peak_memory_usage;
 		float utilization;
 		float bubble_rate;	// bubble_rate + utilization = 1.0
 	};
@@ -103,7 +103,7 @@ public:
 	static inline bool is_trace_more_optimal(const Trace& trace_a, const Trace& trace_b) {
 		return trace_a.time_usage != trace_b.time_usage ?
 				trace_a.time_usage < trace_b.time_usage :
-				(trace_a.peak_memory_usage != trace_b.peak_memory_usage ?
+				(fabs(trace_a.peak_memory_usage-trace_b.peak_memory_usage) > 1e-5 ?
 				trace_a.peak_memory_usage < trace_b.peak_memory_usage :
 				(trace_a.sum_peak_memory_usage != trace_b.sum_peak_memory_usage ?
 				trace_a.sum_peak_memory_usage < trace_b.sum_peak_memory_usage :
@@ -170,8 +170,8 @@ private:
 		// The index of the next stage for a micro batch of one model
 		int mbatch_next_stage[num_models][max_num_mbatches];
 		// Memory pressure on a node
-		int mem_pressure[num_nodes];
-		int history_peak_mem_usage[num_nodes];
+		float mem_pressure[num_nodes];
+		float history_peak_mem_usage[num_nodes];
 		memset(node_idle_time, 0, sizeof(node_idle_time));
 		memset(next_task_index, 0, sizeof(next_task_index));
 		memset(num_fwded_mbatches, 0, sizeof(num_fwded_mbatches));
@@ -417,8 +417,8 @@ private:
 				if (is_trace_more_optimal(new_trace, cur_trace)) {
 					is_accept = true;
 				} else {
-					int delta = cur_trace.sum_peak_memory_usage - new_trace.sum_peak_memory_usage;
-					double prob = std::exp(delta / temperature);
+					float delta = cur_trace.sum_peak_memory_usage - new_trace.sum_peak_memory_usage;
+					double prob = std::exp((double)delta / temperature);
 					double rnd = std::generate_canonical<double, 10>(rng);
 					if (rnd < prob) {
 						is_accept = true;
@@ -473,9 +473,9 @@ private:
 
 		// min_peak_memory is the theoretically minimum peak memory usage. It must be
 		// - greater than the theoretically minimum peak memory usage for every model (assume 1F1B)
-		int min_peak_memory = 0;
+		float min_peak_memory = 0;
 		for(const ModelMeta &meta : model_metas) {
-			min_peak_memory = std::max(min_peak_memory, (int)meta.stage2node.size() * meta.mem_pressure);
+			min_peak_memory = std::max(min_peak_memory, (float)meta.stage2node.size() * meta.mem_pressure);
 		}
 			
 		int total_work_time = num_nodes * min_e2e_time;
@@ -491,7 +491,7 @@ private:
 
 	void print_trace_metric(const TraceMetric &metric) {
 		printf("E2E time usage: %d\n", metric.time_usage);
-		printf("Peak memory usage: %d\n", metric.peak_memory_usage);
+		printf("Peak memory usage: %f\n", metric.peak_memory_usage);
 		printf("Utilization: %.2f%%\n", metric.utilization*100);
 		printf("Bubble rate: %.2f%%\n", metric.bubble_rate*100);
 	}
