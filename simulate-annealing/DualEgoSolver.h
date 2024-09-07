@@ -86,26 +86,18 @@ public:
 		RANDOM_MOVE,
 	};
 
-	// Configuration for simulated annealing
+	// Configuration for simulated annealing (for either e2e time or memory usage)
 	struct SimAnnealConfig {
 		// Initial temperature
-		double stage1_init_temp;
+		double init_temp;
 		// Cooling rate
-		double stage1_cooling_rate;
+		double cooling_rate;
 		// Stop temperature
-		double stage1_stop_temp;
-		// The method for disturbing
-		sim_anneal_disturb_t stage1_disturb_method;
-
-		double stage2_init_temp;
-		double stage2_cooling_rate;
-		double stage2_stop_temp;
-		sim_anneal_disturb_t stage2_disturb_method;
+		double stop_temp;
 		// The random seed
 		int seed;
-
-		// The method for initialization
-		sim_anneal_init_t init_method;
+		// The method for disturbing
+		sim_anneal_disturb_t disturb_method;
 	};
 
 	static inline bool is_trace_more_optimal(const Trace& trace_a, const Trace& trace_b) {
@@ -124,22 +116,10 @@ public:
 
 	static inline string fmt_sim_anneal_config(const SimAnnealConfig &config) {
 		static char buf[1024];
-		snprintf(buf, 1024, "{{%e, %f, %e, %d}, {%e, %f, %e, %d}, %d, %d}",
-			config.stage1_init_temp, config.stage1_cooling_rate, config.stage1_stop_temp, (int)config.stage1_disturb_method,
-			config.stage2_init_temp, config.stage2_cooling_rate, config.stage2_stop_temp, (int)config.stage2_disturb_method,
-			config.seed, (int)config.init_method);
+		snprintf(buf, 1024, "{{%e, %f, %e, %d, %d}",
+			config.init_temp, config.cooling_rate, config.stop_temp, config.seed, (int)config.disturb_method);
 		return std::string(buf);
 	}
-
-private:
-	int num_nodes;
-	int num_models;
-	vector<ModelMeta> model_metas;	// [num_models]
-	SimAnnealConfig sim_anneal_config;
-
-	int max_num_mbatches;
-	int max_num_stages;
-	int tot_num_mbatches_times_stages;
 
 	// The definition of a "task" during simulated annealing
 	struct Task {
@@ -155,9 +135,18 @@ private:
 	struct TaskSched {
 		vector<vector<Task>> tasks;	// [NUM_NODES, sum(m | all models){m.num_mbatches*2}]
 	};
+	
+private:
+	int num_nodes;
+	int num_models;
+	vector<ModelMeta> model_metas;	// [num_models]
+
+	int max_num_mbatches;
+	int max_num_stages;
+	int tot_num_mbatches_times_stages;
 
 	// Map the stage of one model to a node
-	inline int stage_to_node(int model_id, int stage_id) {
+	inline int stage_to_node(int model_id, int stage_id) const {
 		const ModelMeta& meta = model_metas[model_id];
 		int num_stages = (int)meta.stage2node.size();
 		return stage_id < num_stages ? meta.stage2node[stage_id] : meta.stage2node[2*num_stages-1-stage_id];
@@ -168,7 +157,7 @@ private:
 	// If the schedule is invalid, return -1
 	// Save the trace if SAVE_TRACE is true
 	template<bool SAVE_TRACE>
-	Trace get_time_usage(TaskSched const& task_sched) {
+	Trace get_time_usage(TaskSched const& task_sched) const {
 		// The ending time for the last stage of a microbatch of a model
 		int last_stage_end_time[num_models][max_num_mbatches];
 		// The next idle time for a node
@@ -262,7 +251,7 @@ private:
 	}
 
 	// Get the initial task sched
-	TaskSched get_init_task_sched(sim_anneal_init_t init_method) {
+	TaskSched sim_annealing_get_init_task_sched(sim_anneal_init_t init_method) {
 		TaskSched res;
 		res.tasks.resize(num_nodes);
 		// Some helpers
@@ -372,18 +361,17 @@ private:
 	}
 
 	// Run simulated annealing, and return a task_sched
-	TaskSched simulated_annealing() {
-		TaskSched cur_task_sched = get_init_task_sched(sim_anneal_config.init_method);
+	TaskSched simulated_annealing_e2e_time(const SimAnnealConfig &sim_anneal_config, TaskSched cur_task_sched) {
 		TaskSched best_task_sched = cur_task_sched;
 		Trace best_trace = get_time_usage<false>(cur_task_sched);
 		Trace cur_trace = best_trace;
 		assert(best_trace.time_usage != -1);
 		
-		double temperature = sim_anneal_config.stage1_init_temp;
+		double temperature = sim_anneal_config.init_temp;
 		std::mt19937 rng(sim_anneal_config.seed);
-		while (temperature > sim_anneal_config.stage1_stop_temp) {
+		while (temperature > sim_anneal_config.stop_temp) {
 			TaskSched new_task_sched = cur_task_sched;
-			disturb(sim_anneal_config.stage1_disturb_method, rng, new_task_sched);
+			disturb(sim_anneal_config.disturb_method, rng, new_task_sched);
 			Trace new_trace = get_time_usage<false>(new_task_sched);
 			bool is_accept = false;
 			if (new_trace.time_usage != -1) {
@@ -407,15 +395,22 @@ private:
 					best_trace = cur_trace;
 				}
 			}
-			temperature *= sim_anneal_config.stage1_cooling_rate;
+			temperature *= sim_anneal_config.cooling_rate;
 		}
+		return best_task_sched;
+	}
 
-		cur_task_sched = best_task_sched;
-		cur_trace = best_trace;
-		temperature = sim_anneal_config.stage2_init_temp;
-		while (temperature > sim_anneal_config.stage2_stop_temp) {
+	TaskSched simulated_annealing_peak_memory(const SimAnnealConfig &sim_anneal_config, TaskSched cur_task_sched) {
+		TaskSched best_task_sched = cur_task_sched;
+		Trace best_trace = get_time_usage<false>(cur_task_sched);
+		Trace cur_trace = best_trace;
+		assert(best_trace.time_usage != -1);
+
+		double temperature = sim_anneal_config.init_temp;
+		std::mt19937 rng(sim_anneal_config.seed);
+		while (temperature > sim_anneal_config.stop_temp) {
 			TaskSched new_task_sched = cur_task_sched;
-			disturb(sim_anneal_config.stage2_disturb_method, rng, new_task_sched);
+			disturb(sim_anneal_config.disturb_method, rng, new_task_sched);
 			Trace new_trace = get_time_usage<false>(new_task_sched);
 			bool is_accept = false;
 			if (new_trace.time_usage != -1 && new_trace.time_usage <= best_trace.time_usage) {
@@ -439,7 +434,7 @@ private:
 					best_trace = cur_trace;
 				}
 			}
-			temperature *= sim_anneal_config.stage2_cooling_rate;
+			temperature *= sim_anneal_config.cooling_rate;
 		}
 		return best_task_sched;
 	}
@@ -604,8 +599,8 @@ private:
 	}
 
 public:
-	DualEgoSolver(int num_stages, vector<ModelMeta> const& model_metas, SimAnnealConfig const& sim_anneal_config):
-		num_nodes(num_stages), num_models(model_metas.size()), model_metas(model_metas), sim_anneal_config(sim_anneal_config) {
+	DualEgoSolver(int num_stages, vector<ModelMeta> const& model_metas):
+		num_nodes(num_stages), num_models(model_metas.size()), model_metas(model_metas) {
 		max_num_mbatches = 0;
 		max_num_stages = 0;
 		tot_num_mbatches_times_stages = 0;
@@ -617,13 +612,20 @@ public:
 		}
 	}
 
-	Trace solve() {
-		// TaskSched t = get_init_task_sched(sim_anneal_init_t::ONE_F_ONE_B);
-		// Trace tt = get_time_usage<true>(t);
-		// print_trace(tt);
-		TaskSched best_sched = simulated_annealing();
-		Trace result = get_time_usage<true>(best_sched);
-		return result;
+	TaskSched get_init_task_sched(sim_anneal_init_t init_method) {
+		return sim_annealing_get_init_task_sched(init_method);
+	}
+
+	TaskSched optimize_e2e_time(const SimAnnealConfig &config, TaskSched const& task_sched) {
+		return simulated_annealing_e2e_time(config, task_sched);
+	}
+
+	TaskSched optimize_peak_memory(const SimAnnealConfig &config, TaskSched const& task_sched) {
+		return simulated_annealing_peak_memory(config, task_sched);
+	}
+
+	Trace task_sched2trace(TaskSched const& task_sched) const {
+		return get_time_usage<true>(task_sched);
 	}
 
 	Trace solve_greedy() {

@@ -32,32 +32,41 @@ int main(int argc, char* argv[]) {
 		"\033[33m", "\033[34m"
 	});
 
-	vector<ds::SimAnnealConfig> sim_anneal_configs;
-	for (int seed = 0; seed < 8192; ++seed) {
-		DualEgoSolver::SimAnnealConfig sim_anneal_config = {
+	vector<pair<ds::sim_anneal_init_t, ds::SimAnnealConfig>> sim_anneal_e2e_configs;
+	for (int seed = 0; seed < (192-1); ++seed) {
+		DualEgoSolver::SimAnnealConfig cur_config = {
 			0,
 			0.999995,
 			0,
-			DualEgoSolver::sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP,
+			seed,
+			DualEgoSolver::sim_anneal_disturb_t::RANDOM_ADJACENT_SWAP
+		};
+		sim_anneal_e2e_configs.push_back({
+			DualEgoSolver::sim_anneal_init_t::GREEDY,
+			cur_config
+		});
+	}
+
+	vector<ds::SimAnnealConfig> sim_anneal_memory_configs;
+	for (int seed = 0; seed < 4; ++seed) {
+		DualEgoSolver::SimAnnealConfig cur_config = {
 			10,
 			0.999995,
 			1e-16,
-			DualEgoSolver::sim_anneal_disturb_t::RANDOM_MOVE,
 			seed,
-			DualEgoSolver::sim_anneal_init_t::GREEDY,
+			DualEgoSolver::sim_anneal_disturb_t::RANDOM_MOVE
 		};
-		sim_anneal_configs.push_back(sim_anneal_config);
+		sim_anneal_memory_configs.push_back(cur_config);
 	}
 
 	MPI_CHECK(MPI_Init(&argc, &argv));
-	ParallelDualEgoSolver parallel_solver(num_nodes, model_metas, sim_anneal_configs);
+	ParallelDualEgoSolver parallel_solver(num_nodes, model_metas, sim_anneal_e2e_configs, sim_anneal_memory_configs);
 	ds::Trace best_trace = parallel_solver.solve();
 
 	int rank;
 	MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
 	if (rank == 0) {
-		// Trace printing do not care about the sim_anneal_config, so just feed with a random one
-		ds trace_printer(num_nodes, model_metas, sim_anneal_configs[0]);
+		ds trace_printer(num_nodes, model_metas);
 		trace_printer.print_trace(best_trace);
 	}
 
