@@ -2,5 +2,6 @@
 *.o
 simulate-annealing/driver
 simulate-annealing/parallel_driver
+simulate-annealing/memory_optimizer
 /.vscode
 /simulate-annealing/results

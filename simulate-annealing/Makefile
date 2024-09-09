@@ -6,7 +6,7 @@ MPICXX ?= mpicxx
 MPICXXFLAGS ?= -Wall -Ofast -march=native
 
 # Targets
-TARGETS = driver parallel_driver
+TARGETS = driver parallel_driver memory_optimizer
 
 # Dependencies
 DRIVER_OBJS = driver.o
@@ -29,6 +29,9 @@ parallel_driver: $(PARALLEL_DRIVER_OBJS)
 parallel_driver.o: parallel_driver.cc ParallelDualEgoSolver.h
 	$(MPICXX) $(MPICXXFLAGS) -c parallel_driver.cc
 
+memory_optimizer: memory_optimizer.cc
+	$(CXX) $(CXXFLAGS) -o memory_optimizer memory_optimizer.cc -fopenmp
+	
 # Clean target to remove generated files
 clean:
 	rm -f $(TARGETS) *.o
