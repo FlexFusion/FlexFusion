@@ -39,11 +39,13 @@ public:
 
 	// An item in the final trace
 	struct TraceItem {
+		int node_id;
 		int start_time;
 		int duration;
 		int selected_model;
 		int selected_mbatch;
 		int selected_stage;
+		float mem_usage;
 	};
 
 	// The trace, represents the final solution found by the solver
@@ -115,7 +117,7 @@ public:
 	}
 
 	static inline string fmt_sim_anneal_config(const SimAnnealConfig &config) {
-		static char buf[1024];
+		char buf[1024];
 		snprintf(buf, 1024, "{{%e, %f, %e, %d, %d}",
 			config.init_temp, config.cooling_rate, config.stop_temp, config.seed, (int)config.disturb_method);
 		return std::string(buf);
@@ -231,7 +233,7 @@ private:
 				history_peak_mem_usage[node_id] = std::max(history_peak_mem_usage[node_id], mem_pressure[node_id]);
 
 				if constexpr(SAVE_TRACE) {
-					result.trace.push_back({cur_task_start_time, task_duration, model_id, mbatch_id, stage_id});
+					result.trace.push_back({node_id, cur_task_start_time, task_duration, model_id, mbatch_id, stage_id, mem_pressure[node_id]});
 				}
 				task_found = true;
 				break;
@@ -489,11 +491,11 @@ private:
 		return result;
 	}
 
-	void print_trace_metric(const TraceMetric &metric) {
-		printf("E2E time usage: %d\n", metric.time_usage);
-		printf("Peak memory usage: %f\n", metric.peak_memory_usage);
-		printf("Utilization: %.2f%%\n", metric.utilization*100);
-		printf("Bubble rate: %.2f%%\n", metric.bubble_rate*100);
+	void print_trace_metric(const TraceMetric &metric, FILE* fp = stdout) {
+		fprintf(fp, "E2E time usage: %d\n", metric.time_usage);
+		fprintf(fp, "Peak memory usage: %f\n", metric.peak_memory_usage);
+		fprintf(fp, "Utilization: %.2f%%\n", metric.utilization*100);
+		fprintf(fp, "Bubble rate: %.2f%%\n", metric.bubble_rate*100);
 	}
 
 	TaskSched greedy() {
@@ -599,8 +601,8 @@ private:
 	}
 
 public:
-	DualEgoSolver(int num_stages, vector<ModelMeta> const& model_metas):
-		num_nodes(num_stages), num_models(model_metas.size()), model_metas(model_metas) {
+	DualEgoSolver(int num_nodes, vector<ModelMeta> const& model_metas):
+		num_nodes(num_nodes), num_models(model_metas.size()), model_metas(model_metas) {
 		max_num_mbatches = 0;
 		max_num_stages = 0;
 		tot_num_mbatches_times_stages = 0;
@@ -634,59 +636,81 @@ public:
 		return result;
 	}
 
-	void print_trace(Trace const& trace) {
-		using std::string;
-		auto colorize = [&](const string &text, int model_id, bool is_bwd) -> string {
-			static string clear_color = "\033[0m";
-			string color_code = is_bwd ? model_metas[model_id].bwd_color_code : model_metas[model_id].fwd_color_code;
-			return color_code + text + clear_color;
-		};
+	// Print the given trace to stdout or a file
+	void print_trace(Trace const& trace, FILE* fp = stdout) {
+		if (fp == stdout) {
+			// Print the visualization if using stdout
+			using std::string;
+			auto colorize = [&](const string &text, int model_id, bool is_bwd) -> string {
+				static string clear_color = "\033[0m";
+				string color_code = is_bwd ? model_metas[model_id].bwd_color_code : model_metas[model_id].fwd_color_code;
+				return color_code + text + clear_color;
+			};
 
-		struct Job {
-			bool is_occupied = false;
-			int model_id;
-			int mbatch_id;
-			bool is_bwd;
-		};
-		std::vector<Job> jobs[num_nodes];
-		for (auto &jobs_on_node : jobs) {
-			jobs_on_node.resize(trace.time_usage);
-		}
-		for (const TraceItem& trace_item : trace.trace) {
-			auto [start_time, duration, model_id, mbatch_id, selected_stage] = trace_item;
-			int node_id = stage_to_node(model_id, selected_stage);
-			// printf("Start time: %d, Duration: %d, Model: %d, Micro batch: %d, Node: %d\n", start_time, duration, model_id, mbatch_id, node_id);
-			bool is_bwd = selected_stage >= (int)model_metas[model_id].stage2node.size();
-			for (int t = start_time; t < start_time + duration; ++t) {
-				jobs[node_id][t] = {true, model_id, mbatch_id, is_bwd};
+			struct Job {
+				bool is_occupied = false;
+				int model_id;
+				int mbatch_id;
+				bool is_bwd;
+			};
+			std::vector<Job> jobs[num_nodes];
+			for (auto &jobs_on_node : jobs) {
+				jobs_on_node.resize(trace.time_usage);
 			}
-		}
-
-		for (int i = 0; i < num_nodes; ++i) {
-			for (int t = 0; t < trace.time_usage; ++t) {
-				if (jobs[i][t].is_occupied) {
-					string text = "FB"[jobs[i][t].is_bwd] + std::to_string(jobs[i][t].mbatch_id);
-					printf("%s", colorize(text, jobs[i][t].model_id, jobs[i][t].is_bwd).c_str());
-				} else {
-					printf("  ");
+			for (const TraceItem& trace_item : trace.trace) {
+				auto [node_id, start_time, duration, model_id, mbatch_id, selected_stage, mem_usage] = trace_item;
+				// printf("Start time: %d, Duration: %d, Model: %d, Micro batch: %d, Node: %d\n", start_time, duration, model_id, mbatch_id, node_id);
+				bool is_bwd = selected_stage >= (int)model_metas[model_id].stage2node.size();
+				for (int t = start_time; t < start_time + duration; ++t) {
+					jobs[node_id][t] = {true, model_id, mbatch_id, is_bwd};
 				}
 			}
-			printf("\n");
+
+			for (int i = 0; i < num_nodes; ++i) {
+				for (int t = 0; t < trace.time_usage; ++t) {
+					if (jobs[i][t].is_occupied) {
+						string text = "FB"[jobs[i][t].is_bwd] + std::to_string(jobs[i][t].mbatch_id);
+						printf("%s", colorize(text, jobs[i][t].model_id, jobs[i][t].is_bwd).c_str());
+					} else {
+						printf("  ");
+					}
+				}
+				printf("\n");
+			}
 		}
 
-		printf("Theoretically best:\n");
-		TraceMetric metric_theoretical = get_theoretical_best_metric();
-		print_trace_metric(metric_theoretical);
-		printf("\n");
+		// Print the schedule if using a file
+		if (fp != stdout) {
+			for (int node_id = 0; node_id < num_nodes; ++node_id) {
+				vector<TraceItem> trace_items = filter(trace.trace, [&](const TraceItem &item) {
+					return item.node_id == node_id;
+				});
+				std::sort(trace_items.begin(), trace_items.end(), [](const TraceItem &a, const TraceItem &b) {
+					return a.start_time < b.start_time;
+				});
+				for (const TraceItem &item : trace_items) {
+					fprintf(fp, "[%d, %d, %d, %d, %d, %f], ", item.selected_model, item.selected_mbatch, item.selected_stage, item.start_time, item.start_time+item.duration, item.mem_usage);
+				}
+				fprintf(fp, "\n");
+			}
+			fprintf(fp, "\n");
+		}
 
-		printf("Greedy:\n");
+		// Print summarization & comparison
+		fprintf(fp, "Theoretically best:\n");
+		TraceMetric metric_theoretical = get_theoretical_best_metric();
+		print_trace_metric(metric_theoretical, fp);
+		fprintf(fp, "\n");
+
+		fprintf(fp, "Greedy:\n");
 		Trace sched_greedy = solve_greedy();
 		TraceMetric metric_greedy = get_trace_metric(sched_greedy);
-		print_trace_metric(metric_greedy);
-		printf("\n");
+		print_trace_metric(metric_greedy, fp);
+		fprintf(fp, "\n");
 
-		printf("Ours:\n");
+		fprintf(fp, "Ours:\n");
 		TraceMetric metric_ours = get_trace_metric(trace);
-		print_trace_metric(metric_ours);
+		print_trace_metric(metric_ours, fp);
+		fprintf(fp, "\n");
 	}
 };

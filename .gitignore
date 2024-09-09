@@ -3,4 +3,4 @@
 simulate-annealing/driver
 simulate-annealing/parallel_driver
 /.vscode
-
+/simulate-annealing/results

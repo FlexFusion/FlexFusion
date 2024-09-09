@@ -172,12 +172,14 @@ private:
 			ds::TaskSched cur_tasksched = solver.get_init_task_sched(cur_init_method);
 			cur_tasksched = solver.optimize_e2e_time(cur_e2e_config, cur_tasksched);
 			int cur_time_usage = solver.task_sched2trace(cur_tasksched).time_usage;
-			if (cur_time_usage > get_cur_best_time_usage()) {
+			int best_time_usage = get_cur_best_time_usage();
+			if (cur_time_usage > best_time_usage) {
 				// No advantage on time usage, give up
 				printf("Worker %d gets a time usage of %d, which is greater than the best one, giving up...\n", rank-1, cur_time_usage);
 				continue;
 			}
 			submit_task_sched(solver, cur_tasksched);
+			printf("Worker %d got a e2e time of %d (best: %d), optimizing peak mem usage...\n", rank-1, cur_time_usage, best_time_usage);
 
 			// Optimize memory usage
 			for (ds::SimAnnealConfig cur_optim_config : sim_anneal_memory_configs) {
@@ -196,8 +198,6 @@ private:
 				ds::Trace cur_trace = solver.task_sched2trace(memory_optimized_tasksched);
 				printf("Worker %d gets an answer of %s\n", rank-1, ds::fmt_trace(cur_trace).c_str());
 			}
-			
-			
 		}
 
 		delete[] send_buf;
