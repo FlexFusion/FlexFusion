@@ -1,7 +1,7 @@
 *.exe
 *.o
-simulate-annealing/driver
-simulate-annealing/parallel_driver
-simulate-annealing/memory_optimizer
+driver
+parallel_driver
+memory_optimizer
 /.vscode
-/simulate-annealing/results
+results
