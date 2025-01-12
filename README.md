@@ -2,6 +2,8 @@
 
 FlexFusion utilizes a parallelized simulated annealing algorithm to generate a highly-optimized fused pipeline schedule.
 
+![image](./figures/fused_pp_schedule_example.pdf)
+
 This repo reproduces the main results of the **intra-stage fusion algorithm** introduced in the paper [RLHFuse: Efficient RLHF Training for Large Language Models with Inter- and Intra-Stage Fusion](https://arxiv.org/abs/2409.13221).
 
 ## Files
