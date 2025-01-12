@@ -1,8 +1,8 @@
-# Dual Ego Solver
+# FlexFusion
 
-A solution based on simulated annealing for the dual model pipeline scheduling problem.
+FlexFusion utilizes a parallelized simulated annealing algorithm to generate a highly-optimized fused pipeline schedule.
 
-Proposed in the paper "Optimizing RLHF Training for Large Language Model with Stage Fusion".
+This repo reproduces the main results of the **intra-stage fusion algorithm** introduced in the paper [RLHFuse: Efficient RLHF Training for Large Language Models with Inter- and Intra-Stage Fusion](https://arxiv.org/abs/2409.13221).
 
 ## Files
 
