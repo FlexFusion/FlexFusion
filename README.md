@@ -59,11 +59,11 @@ In `memory_optimizer`, we just use OpenMP to let every thread optimize the memor
 
 If you find this project useful, please cite:
 
- [RLHFuse: Efficient RLHF Training for Large Language Models with Inter- and Intra-Stage Fusion](https://arxiv.org/abs/2409.13221)
+ [Optimizing RLHF Training for Large Language Models with Stage Fusion](https://arxiv.org/abs/2409.13221)
 
 ```
 @article{zhong2024rlhfuseefficientrlhftraining,
-      title={RLHFuse: Efficient RLHF Training for Large Language Models with Inter- and Intra-Stage Fusion}, 
+      title={Optimizing RLHF Training for Large Language Models with Stage Fusion}, 
       author={Yinmin Zhong and Zili Zhang and Bingyang Wu and Shengyu Liu and Yukun Chen and Changyi Wan and Hanpeng Hu and Lei Xia and Ranchen Ming and Yibo Zhu and Xin Jin},
       year={2024},
       journal = {arXiv preprint arXiv: 2409.13221}
